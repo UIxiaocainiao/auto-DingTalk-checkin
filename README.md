@@ -51,6 +51,28 @@ npx weixin-acp start -- codex-acp
 
 如果你使用的是本仓库里 `打卡` 这类 adb 本地命令，`scrcpy` 现在是尽量启动而不是硬依赖；锁屏后即使无法拉起前台窗口，也会继续走后台 adb 流程。
 
+如果你想在桌面上看到手机画面，可以先安装 `scrcpy`：
+
+```bash
+# macOS (Homebrew)
+brew install scrcpy android-platform-tools
+
+# Ubuntu / Debian
+sudo apt update
+sudo apt install -y scrcpy adb
+
+# Arch Linux
+sudo pacman -S scrcpy android-tools
+```
+
+Windows 可以直接用 `winget`：
+
+```powershell
+winget install Genymobile.scrcpy
+```
+
+安装完成后，先用 USB 或无线 adb 连上手机，再执行本项目即可。
+
 当前仓库还内置了自动打卡调度：默认会按中国法定工作日，在每天 `09:01` 到 `09:10` 之间随机执行一次上班打卡，并在 `18:10` 到 `18:20` 之间随机执行一次下班打卡，复用同一套后台 adb 流程。微信里手动发送 `打卡` 仍然随时可用。工作日判定依赖节假日接口；若接口暂时不可用，当天会延后重试，不会盲目执行。若要关闭这项能力，可设置 `WEIXIN_AUTO_CLOCK_IN=0`。
 
 另外，`weixin-acp` 还会在每天 `09:05` 主动给最近与你交互过的微信会话发送一段晨间鼓励文案，当前文案风格默认按男性口吻编写。第一次启用后，请先手动给 bot 发一条消息，用来建立主动发送所需的会话上下文；之后它就能按计划主动发消息。若要关闭这项能力，可设置 `WEIXIN_DAILY_MOTIVATION=0`。
