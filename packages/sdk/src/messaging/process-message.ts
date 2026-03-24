@@ -11,6 +11,7 @@ import { downloadMediaFromItem } from "../media/media-download.js";
 import { getExtensionFromMime } from "../media/mime.js";
 import { logger } from "../util/logger.js";
 
+import { saveActiveConversation } from "./active-conversation.js";
 import { setContextToken, bodyFromItemList, isMediaItem } from "./inbound.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
 import { sendWeixinMediaFile } from "./send-media.js";
@@ -132,7 +133,13 @@ export async function processOneMessage(
   // --- Store context token ---
   const contextToken = full.context_token;
   if (contextToken) {
-    setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
+    const fromUserId = full.from_user_id ?? "";
+    setContextToken(deps.accountId, fromUserId, contextToken);
+    saveActiveConversation({
+      accountId: deps.accountId,
+      userId: fromUserId,
+      contextToken,
+    });
   }
 
   // --- Download media ---

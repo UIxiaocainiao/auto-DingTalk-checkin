@@ -16,6 +16,7 @@ import { login, start } from "weixin-agent-sdk";
 
 import { AcpAgent } from "./src/acp-agent.js";
 import { startAutoClockInScheduler } from "./src/auto-clock-in.js";
+import { startDailyMotivationScheduler } from "./src/daily-motivation.js";
 import { LocalCommandAgent } from "./src/local-command-agent.js";
 
 const command = process.argv[2];
@@ -118,17 +119,23 @@ async function main() {
         abortSignal: ac.signal,
         log: console.log,
       });
+      const dailyMotivation = startDailyMotivationScheduler({
+        abortSignal: ac.signal,
+        log: console.log,
+      });
 
       // Graceful shutdown
       process.on("SIGINT", () => {
         console.log("\n正在停止...");
         baseAgent.dispose();
         autoClockIn?.stop();
+        dailyMotivation?.stop();
         ac.abort();
       });
       process.on("SIGTERM", () => {
         baseAgent.dispose();
         autoClockIn?.stop();
+        dailyMotivation?.stop();
         ac.abort();
       });
 
