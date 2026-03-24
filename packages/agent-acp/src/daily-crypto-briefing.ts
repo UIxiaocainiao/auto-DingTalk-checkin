@@ -9,6 +9,8 @@ const DAILY_CRYPTO_BRIEFING_MINUTE = 0;
 const STATE_FILE = path.join(homedir(), ".openclaw", "weixin-agent-sdk", "daily-crypto-briefing-state.json");
 const BINANCE_API_BASE_URL =
   process.env.WEIXIN_CRYPTO_API_BASE_URL?.trim() || "https://api.binance.com/api/v3";
+const LBMA_GOLD_PM_URL =
+  process.env.WEIXIN_GOLD_PM_URL?.trim() || "https://prices.lbma.org.uk/json/gold_pm.json";
 const DEFAULT_QUOTE_ASSET = process.env.WEIXIN_CRYPTO_QUOTE_ASSET?.trim().toUpperCase() || "USDT";
 
 type SchedulerHandle = {
@@ -33,6 +35,11 @@ type BinanceTicker = {
   symbol?: string;
   lastPrice?: string;
   priceChangePercent?: string;
+};
+
+type LbmaGoldFix = {
+  d?: string;
+  v?: number[];
 };
 
 const DEFAULT_CRYPTO_ASSETS: CryptoAsset[] = [
@@ -120,6 +127,46 @@ function formatChange(value: number | null | undefined): string {
   return `24h ${sign}${value.toFixed(2)}%`;
 }
 
+function formatFixChange(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "较上一定盘 --";
+  }
+  const sign = value > 0 ? "+" : "";
+  return `较上一定盘 ${sign}${value.toFixed(2)}%`;
+}
+
+async function fetchGoldSummaryLine(): Promise<string> {
+  const response = await fetch(LBMA_GOLD_PM_URL);
+  if (!response.ok) {
+    throw new Error(`LBMA 接口返回 ${response.status}`);
+  }
+
+  const payload = (await response.json()) as LbmaGoldFix[];
+  const fixes = payload.filter(
+    (item): item is Required<Pick<LbmaGoldFix, "d" | "v">> =>
+      typeof item.d === "string" &&
+      Array.isArray(item.v) &&
+      typeof item.v[0] === "number",
+  );
+
+  const latest = fixes[fixes.length - 1];
+  const previous = fixes[fixes.length - 2];
+  if (!latest || !previous) {
+    throw new Error("LBMA 数据不足，无法计算黄金涨跌幅");
+  }
+
+  const latestUsd = latest.v[0];
+  const previousUsd = previous.v[0];
+  const changePercent = previousUsd === 0
+    ? null
+    : ((latestUsd - previousUsd) / previousUsd) * 100;
+
+  return `黄金(LBMA PM): ${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(latestUsd)} USD/oz | ${formatFixChange(changePercent)} | ${latest.d}`;
+}
+
 async function fetchCryptoBriefingText(): Promise<string> {
   const assets = resolveCryptoAssets();
   const symbols = assets.map((asset) => `${asset.symbol}${DEFAULT_QUOTE_ASSET}`);
@@ -156,10 +203,19 @@ async function fetchCryptoBriefingText(): Promise<string> {
     )}`;
   });
 
+  let goldLine = "黄金(LBMA PM): 数据暂缺 | 较上一定盘 --";
+  try {
+    goldLine = await fetchGoldSummaryLine();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    goldLine = `黄金(LBMA PM): 数据暂缺 | ${message}`;
+  }
+
   return [
     `早报 | 主流虚拟货币行情 (${DEFAULT_QUOTE_ASSET})`,
+    goldLine,
     ...lines,
-    "数据源: Binance 24hr Ticker",
+    "数据源: LBMA PM Fix, Binance 24hr Ticker",
   ].join("\n");
 }
 
