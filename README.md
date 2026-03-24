@@ -77,6 +77,8 @@ winget install Genymobile.scrcpy
 
 另外，`weixin-acp` 还会在每天 `09:05` 主动给最近与你交互过的微信会话发送一段晨间鼓励文案，当前文案风格默认按男性口吻编写。第一次启用后，请先手动给 bot 发一条消息，用来建立主动发送所需的会话上下文；之后它就能按计划主动发消息。若要关闭这项能力，可设置 `WEIXIN_DAILY_MOTIVATION=0`。
 
+同时，`weixin-acp` 还会在每天 `08:00` 主动发送一条主流虚拟货币价格简报，默认包含 `BTC / ETH / SOL / BNB / XRP / DOGE` 的 `USDT` 价格和 24 小时涨跌幅。第一次启用前同样需要你先手动给 bot 发过一条消息，以建立主动发送上下文。若要关闭这项能力，可设置 `WEIXIN_DAILY_CRYPTO_BRIEFING=0`；若要改币种列表，可设置 `WEIXIN_CRYPTO_IDS=btc,eth,...` 这种逗号分隔列表；若要改报价币种，可设置 `WEIXIN_CRYPTO_QUOTE_ASSET=USDT`。
+
 ### kimi-cli
 
 ```bash

@@ -16,6 +16,7 @@ import { login, start } from "weixin-agent-sdk";
 
 import { AcpAgent } from "./src/acp-agent.js";
 import { startAutoClockInScheduler } from "./src/auto-clock-in.js";
+import { startDailyCryptoBriefingScheduler } from "./src/daily-crypto-briefing.js";
 import { startDailyMotivationScheduler } from "./src/daily-motivation.js";
 import { LocalCommandAgent } from "./src/local-command-agent.js";
 
@@ -123,6 +124,10 @@ async function main() {
         abortSignal: ac.signal,
         log: console.log,
       });
+      const dailyCryptoBriefing = startDailyCryptoBriefingScheduler({
+        abortSignal: ac.signal,
+        log: console.log,
+      });
 
       // Graceful shutdown
       process.on("SIGINT", () => {
@@ -130,12 +135,14 @@ async function main() {
         baseAgent.dispose();
         autoClockIn?.stop();
         dailyMotivation?.stop();
+        dailyCryptoBriefing?.stop();
         ac.abort();
       });
       process.on("SIGTERM", () => {
         baseAgent.dispose();
         autoClockIn?.stop();
         dailyMotivation?.stop();
+        dailyCryptoBriefing?.stop();
         ac.abort();
       });
 
