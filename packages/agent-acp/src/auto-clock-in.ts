@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { runAttendanceCommand } from "./local-command-agent.js";
+import { CLOCK_IN_SLOTS, type ClockInSlotConfig, type ClockInSlotId } from "./clock-in-config.js";
 
 const HOLIDAY_INFO_API_BASE_URL =
   process.env.WEIXIN_HOLIDAY_API_BASE_URL?.trim() || "https://timor.tech/api/holiday/info";
@@ -12,33 +13,6 @@ const RETRY_DELAY_MS = 5 * 60_000;
 const STATE_FILE = path.join(homedir(), ".openclaw", "weixin-agent-sdk", "auto-clock-in-state.json");
 const RUN_HISTORY_RETENTION_DAYS = 14;
 
-type AutoClockInSlotId = "morning" | "evening";
-
-type AutoClockInSlotConfig = {
-  id: AutoClockInSlotId;
-  label: string;
-  hour: number;
-  startMinute: number;
-  endMinute: number;
-};
-
-const AUTO_CLOCK_IN_SLOTS: AutoClockInSlotConfig[] = [
-  {
-    id: "morning",
-    label: "上班",
-    hour: 9,
-    startMinute: 1,
-    endMinute: 10,
-  },
-  {
-    id: "evening",
-    label: "下班",
-    hour: 18,
-    startMinute: 10,
-    endMinute: 20,
-  },
-];
-
 type AutoClockInSchedulerOptions = {
   abortSignal?: AbortSignal;
   log?: (message: string) => void;
@@ -47,7 +21,7 @@ type AutoClockInSchedulerOptions = {
 type AutoClockInState = {
   lastRunDate?: string;
   lastRunAt?: string;
-  runs?: Record<string, Partial<Record<AutoClockInSlotId, string>>>;
+  runs?: Record<string, Partial<Record<ClockInSlotId, string>>>;
 };
 
 type HolidayInfoResponse = {
@@ -71,7 +45,7 @@ type SchedulerHandle = {
 
 type ScheduledClockIn = {
   dateString: string;
-  slot: AutoClockInSlotConfig;
+  slot: ClockInSlotConfig;
   targetAt: Date;
 };
 
@@ -108,7 +82,7 @@ async function loadState(): Promise<AutoClockInState> {
   try {
     const content = await readFile(STATE_FILE, "utf8");
     const parsed = JSON.parse(content) as AutoClockInState;
-    const runs: Record<string, Partial<Record<AutoClockInSlotId, string>>> = {
+    const runs: Record<string, Partial<Record<ClockInSlotId, string>>> = {
       ...(parsed.runs ?? {}),
     };
 
@@ -147,8 +121,8 @@ async function saveState(state: AutoClockInState): Promise<void> {
 }
 
 function pruneRuns(
-  runs: Record<string, Partial<Record<AutoClockInSlotId, string>>>,
-): Record<string, Partial<Record<AutoClockInSlotId, string>>> {
+  runs: Record<string, Partial<Record<ClockInSlotId, string>>>,
+): Record<string, Partial<Record<ClockInSlotId, string>>> {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - RUN_HISTORY_RETENTION_DAYS);
   const cutoffDate = formatDate(cutoff);
@@ -158,14 +132,14 @@ function pruneRuns(
   );
 }
 
-function hasRunSlot(state: AutoClockInState, dateString: string, slotId: AutoClockInSlotId): boolean {
+function hasRunSlot(state: AutoClockInState, dateString: string, slotId: ClockInSlotId): boolean {
   return Boolean(state.runs?.[dateString]?.[slotId]);
 }
 
 function markRunSlot(
   state: AutoClockInState,
   dateString: string,
-  slotId: AutoClockInSlotId,
+  slotId: ClockInSlotId,
   ranAt: Date,
 ): AutoClockInState {
   const runs = {
@@ -219,7 +193,7 @@ async function fetchNextWorkday(dateString: string): Promise<string> {
 function resolveMinuteRange(
   now: Date,
   candidateDateString: string,
-  slot: AutoClockInSlotConfig,
+  slot: ClockInSlotConfig,
 ): { min: number; max: number } | undefined {
   let minMinute = slot.startMinute;
   const maxMinute = slot.endMinute;
@@ -251,7 +225,7 @@ async function findNextTargetDateTime(args: {
   const todayDate = formatDate(now);
 
   if (await isChinaLegalWorkday(todayDate)) {
-    for (const slot of AUTO_CLOCK_IN_SLOTS) {
+    for (const slot of CLOCK_IN_SLOTS) {
       if (hasRunSlot(state, todayDate, slot.id)) {
         continue;
       }
@@ -280,7 +254,7 @@ async function findNextTargetDateTime(args: {
   }
 
   const nextWorkdayDate = await fetchNextWorkday(todayDate);
-  const firstSlot = AUTO_CLOCK_IN_SLOTS[0];
+  const firstSlot = CLOCK_IN_SLOTS[0];
   const targetDay = parseLocalDate(nextWorkdayDate);
   return {
     dateString: nextWorkdayDate,
@@ -383,7 +357,11 @@ export function startAutoClockInScheduler(opts?: AutoClockInSchedulerOptions): S
       }
 
       log(`[auto-clock-in] 开始执行 ${today} ${scheduled.slot.label}自动打卡`);
-      const result = await runAttendanceCommand({ headless: true });
+      const result = await runAttendanceCommand({
+        headless: true,
+        enforceTimeWindow: true,
+        throwOnOutsideWindow: true,
+      });
       log(`[auto-clock-in] ${scheduled.slot.label}自动打卡完成: ${result.text ?? "自动打卡已完成"}`);
 
       await saveState(markRunSlot(state, today, scheduled.slot.id, now));
