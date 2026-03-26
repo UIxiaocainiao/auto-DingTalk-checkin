@@ -16,6 +16,7 @@ import {
   writeLoginQrImage,
 } from "./auth/login-qr-output.js";
 import { monitorWeixinProvider } from "./monitor/monitor.js";
+import { sendLoginSuccessTextMessage } from "./proactive.js";
 import { startMacOsKeepAwake } from "./util/macos-keep-awake.js";
 
 export type LoginOptions = {
@@ -41,6 +42,7 @@ export type StartOptions = {
 };
 
 let pendingLoggedInAccountId: string | undefined;
+const DEFAULT_LOGIN_SUCCESS_NOTICE = "扫码成功，微信连接已建立。";
 
 /**
  * Interactive QR-code login. Prints the QR code to the terminal and waits
@@ -104,6 +106,22 @@ export async function login(opts?: LoginOptions): Promise<string> {
   pendingLoggedInAccountId = normalizedId;
 
   log("\n✅ 与微信连接成功！");
+  const loginSuccessNotice = process.env.WEIXIN_LOGIN_SUCCESS_NOTICE?.trim() || DEFAULT_LOGIN_SUCCESS_NOTICE;
+  try {
+    const sendResult = await sendLoginSuccessTextMessage({
+      accountId: normalizedId,
+      userId: waitResult.userId,
+      text: loginSuccessNotice,
+    });
+    if (sendResult.sent) {
+      log("[weixin] 已向微信推送登录成功提示");
+    } else if (sendResult.reason) {
+      log(`[weixin] 未发送登录成功提示: ${sendResult.reason}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`[weixin] 发送登录成功提示失败: ${message}`);
+  }
   return normalizedId;
 }
 

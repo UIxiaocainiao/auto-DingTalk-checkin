@@ -42,6 +42,16 @@ packages/
 npx weixin-acp login
 ```
 
+如果你希望在 `start` 模式下每次扫码成功后只提示“登录成功”并立即退出进程，而不是继续启动 bot，可设置：
+
+```bash
+WEIXIN_EXIT_AFTER_LOGIN=1 npx weixin-acp start -- codex-acp
+```
+
+这个模式只完成扫码登录，不会进入消息循环。
+
+扫码成功后，程序会尽量向微信主动推送一条“登录成功”提示；但这依赖于扫码用户之前已经和 bot 建立过可用会话上下文。如果没有现成的会话 `contextToken`，登录本身仍然会成功，只是不会发出这条提示。
+
 在 macOS 上，`start()` / `weixin-acp start` 默认会自动启用 `caffeinate` 防休眠，所以锁定屏幕后 bot 仍可继续在后台运行。这个保活只覆盖“锁屏但机器未合盖”的场景；如果合上笔记本或系统主动关机，进程仍会中断。若你确实要关闭这项行为，可设置 `WEIXIN_MACOS_KEEP_AWAKE=0`。
 
 ### Claude Code

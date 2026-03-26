@@ -23,6 +23,7 @@ import { LocalCommandAgent } from "./src/local-command-agent.js";
 const command = process.argv[2];
 const DEFAULT_CODEX_MODEL = "gpt-5.4";
 const CODEX_ACP_NAMES = new Set(["codex-acp", "@zed-industries/codex-acp"]);
+const EXIT_AFTER_LOGIN = process.env.WEIXIN_EXIT_AFTER_LOGIN === "1";
 
 function isCodexAcpInvocation(acpCommand: string, acpArgs: string[]): boolean {
   const tokens = [acpCommand, ...acpArgs];
@@ -91,11 +92,19 @@ function resolveAcpArgs(acpCommand: string, acpArgs: string[]): {
 async function main() {
   switch (command) {
     case "login": {
-      await login();
+      const accountId = await login();
+      console.log(`[weixin-acp] 扫码成功，已完成登录，account=${accountId}`);
       break;
     }
 
     case "start": {
+      if (EXIT_AFTER_LOGIN) {
+        const accountId = await login();
+        console.log(`[weixin-acp] 扫码成功，已完成登录，account=${accountId}`);
+        console.log("[weixin-acp] WEIXIN_EXIT_AFTER_LOGIN=1，已在登录成功后退出。");
+        break;
+      }
+
       const ddIndex = process.argv.indexOf("--");
       if (ddIndex === -1 || ddIndex + 1 >= process.argv.length) {
         console.error("错误: 请在 -- 后指定 ACP agent 启动命令");

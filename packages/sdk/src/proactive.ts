@@ -42,3 +42,36 @@ export async function sendProactiveTextMessage(params: {
     },
   });
 }
+
+export async function sendLoginSuccessTextMessage(params: {
+  text: string;
+  accountId: string;
+  userId?: string;
+}): Promise<{ sent: boolean; reason?: string }> {
+  const account = resolveWeixinAccount(params.accountId);
+  if (!account.configured || !account.token) {
+    return { sent: false, reason: `账号 ${params.accountId} 未配置可用 token` };
+  }
+
+  const activeConversation = loadActiveConversation(account.accountId);
+  if (!activeConversation) {
+    return { sent: false, reason: "未找到可用会话，无法主动发送登录成功提示" };
+  }
+
+  const expectedUserId = params.userId?.trim();
+  if (expectedUserId && activeConversation.userId !== expectedUserId) {
+    return { sent: false, reason: "最近活跃会话与当前扫码用户不一致，已跳过登录成功提示" };
+  }
+
+  await sendMessageWeixin({
+    to: activeConversation.userId,
+    text: markdownToPlainText(params.text),
+    opts: {
+      baseUrl: account.baseUrl,
+      token: account.token,
+      contextToken: activeConversation.contextToken,
+    },
+  });
+
+  return { sent: true };
+}
