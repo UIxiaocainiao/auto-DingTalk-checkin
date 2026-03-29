@@ -9,7 +9,7 @@ const DINGTALK_PACKAGE = "com.alibaba.android.rimet";
 const DINGTALK_WORKBENCH_URI =
   process.env.WEIXIN_DINGTALK_WORKBENCH_URI ?? "dingtalk://dingtalkclient/org_microapp_list.html";
 const DINGTALK_ATTENDANCE_ENTRY_TEXTS = (
-  process.env.WEIXIN_DINGTALK_ATTENDANCE_ENTRY_TEXTS ?? "考勤打卡,考勤,打卡"
+  process.env.WEIXIN_DINGTALK_ATTENDANCE_ENTRY_TEXTS ?? "签到,考勤打卡,考勤,打卡,出勤天数,出勤"
 )
   .split(",")
   .map((value) => value.trim())
@@ -199,7 +199,8 @@ async function ensureScrcpyRunning(deviceId: string): Promise<string> {
 
 function parseNodes(xml: string): UINode[] {
   const nodes: UINode[] = [];
-  const tagRegex = /<node\b([^>]*?)\/>/g;
+  // UI XML mixes both self-closing leaf nodes and opening tags for container nodes.
+  const tagRegex = /<node\b([^>]*?)(?:\/>|>)/g;
   for (const match of xml.matchAll(tagRegex)) {
     const attrs: UINode = {};
     const attrRegex = /([\w:-]+)="([^"]*)"/g;
@@ -272,6 +273,30 @@ function formatClockInWindows(): string {
   }).join(" / ");
 }
 
+function getSlotCenterMinute(slot: ClockInSlotConfig): number {
+  return slot.hour * 60 + Math.round((slot.startMinute + slot.endMinute) / 2);
+}
+
+function resolveManualClockInSlot(now: Date): ClockInSlotConfig {
+  const activeSlot = resolveActiveClockInSlot(now);
+  if (activeSlot) {
+    return activeSlot;
+  }
+
+  const currentMinute = now.getHours() * 60 + now.getMinutes();
+  let nearestSlot = CLOCK_IN_SLOTS[0];
+  let nearestDistance = Math.abs(getSlotCenterMinute(nearestSlot) - currentMinute);
+
+  for (const slot of CLOCK_IN_SLOTS.slice(1)) {
+    const distance = Math.abs(getSlotCenterMinute(slot) - currentMinute);
+    if (distance < nearestDistance) {
+      nearestSlot = slot;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearestSlot;
+}
 function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: number } {
   const red = r / 255;
   const green = g / 255;
@@ -586,9 +611,12 @@ export async function runAttendanceCommand(opts?: {
   await exitDingTalk(deviceId);
   const clearResult = await clearRecentApps(deviceId);
 
+  const attendanceAction = activeSlot
+    ? `识别并点击${activeSlot.label}打卡按钮`
+    : "进入打卡页面（当前不在打卡时间窗内，未点击上/下班按钮）";
   const clearStatus = clearResult.cleared ? "并清除全部后台任务" : "未找到“清除全部”，已跳过后台清理";
   return {
-    text: `${scrcpyStatus}，已通过 adb 打开钉钉工作台、识别并点击${activeSlot?.label ?? ""}打卡按钮、后台退出钉钉，${clearStatus}。`,
+    text: `${scrcpyStatus}，已通过 adb 打开钉钉工作台、${attendanceAction}、后台退出钉钉，${clearStatus}。`,
   };
 }
 
@@ -604,7 +632,11 @@ export class LocalCommandAgent implements Agent {
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const text = request.text.trim();
     if (text === "打卡") {
-      return await runAttendanceCommand();
+      const slot = resolveManualClockInSlot(new Date());
+      return await runAttendanceCommand({
+        enforceTimeWindow: false,
+        overrideSlotId: slot.id,
+      });
     }
     if (text === "退出钉钉") {
       return await handleExitDingTalkCommand();
