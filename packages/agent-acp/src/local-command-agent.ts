@@ -1,3 +1,7 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+
 import spawn from "cross-spawn";
 import { PNG } from "pngjs";
 
@@ -22,6 +26,13 @@ const WORKBENCH_SCROLL_ATTEMPTS = Number.parseInt(process.env.WEIXIN_DINGTALK_WO
 const PUNCH_BUTTON_DETECTION_STEP = Number.parseInt(process.env.WEIXIN_DINGTALK_PUNCH_BUTTON_DETECTION_STEP ?? "5", 10);
 const PUNCH_BUTTON_DETECTION_ATTEMPTS = Number.parseInt(process.env.WEIXIN_DINGTALK_PUNCH_BUTTON_DETECTION_ATTEMPTS ?? "5", 10);
 const PUNCH_BUTTON_RETRY_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_PUNCH_BUTTON_RETRY_DELAY_MS ?? "1200", 10);
+const FAST_CLOCK_SETUP_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_FAST_CLOCK_SETUP_DELAY_MS ?? "1200", 10);
+const FAST_CLOCK_PAGE_LOAD_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_FAST_CLOCK_PAGE_LOAD_DELAY_MS ?? "3000", 10);
+const LOCAL_COMMAND_STATE_FILE = path.join(homedir(), ".openclaw", "weixin-agent-sdk", "local-command-state.json");
+const FAST_CLOCK_SETTINGS_TAB_POINT = { xRatio: 0.833, yRatio: 0.965 };
+const FAST_CLOCK_ENTRY_POINT = { xRatio: 0.5, yRatio: 0.21 };
+const FAST_CLOCK_MORNING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.547 };
+const FAST_CLOCK_EVENING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.698 };
 
 type CommandResult = {
   stdout: string;
@@ -37,12 +48,30 @@ type BinaryCommandResult = {
 
 type UINode = Record<string, string>;
 
+type LocalCommandState = {
+  fastClockVerifiedAt?: string;
+};
+
 function log(message: string): void {
   console.log(`[local-command] ${message}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadLocalCommandState(): Promise<LocalCommandState> {
+  try {
+    const content = await readFile(LOCAL_COMMAND_STATE_FILE, "utf8");
+    return JSON.parse(content) as LocalCommandState;
+  } catch {
+    return {};
+  }
+}
+
+async function saveLocalCommandState(state: LocalCommandState): Promise<void> {
+  await mkdir(path.dirname(LOCAL_COMMAND_STATE_FILE), { recursive: true });
+  await writeFile(LOCAL_COMMAND_STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
 function commandString(command: string, args: string[]): string {
@@ -273,30 +302,6 @@ function formatClockInWindows(): string {
   }).join(" / ");
 }
 
-function getSlotCenterMinute(slot: ClockInSlotConfig): number {
-  return slot.hour * 60 + Math.round((slot.startMinute + slot.endMinute) / 2);
-}
-
-function resolveManualClockInSlot(now: Date): ClockInSlotConfig {
-  const activeSlot = resolveActiveClockInSlot(now);
-  if (activeSlot) {
-    return activeSlot;
-  }
-
-  const currentMinute = now.getHours() * 60 + now.getMinutes();
-  let nearestSlot = CLOCK_IN_SLOTS[0];
-  let nearestDistance = Math.abs(getSlotCenterMinute(nearestSlot) - currentMinute);
-
-  for (const slot of CLOCK_IN_SLOTS.slice(1)) {
-    const distance = Math.abs(getSlotCenterMinute(slot) - currentMinute);
-    if (distance < nearestDistance) {
-      nearestSlot = slot;
-      nearestDistance = distance;
-    }
-  }
-
-  return nearestSlot;
-}
 function rgbToHsv(r: number, g: number, b: number): { h: number; s: number; v: number } {
   const red = r / 255;
   const green = g / 255;
@@ -460,6 +465,43 @@ function findClearAllCenter(xml: string): { x: number; y: number } | undefined {
   return parseBounds(clearAllNode?.bounds);
 }
 
+function pointFromRatio(width: number, height: number, point: { xRatio: number; yRatio: number }): { x: number; y: number } {
+  return {
+    x: Math.round(width * point.xRatio),
+    y: Math.round(height * point.yRatio),
+  };
+}
+
+function isBlueSwitchEnabledInScreenshot(
+  pngBuffer: Buffer,
+  point: { xRatio: number; yRatio: number },
+): boolean {
+  const png = PNG.sync.read(pngBuffer);
+  const { width, height, data } = png;
+  const center = pointFromRatio(width, height, point);
+  const halfWidth = Math.max(24, Math.round(width * 0.025));
+  const halfHeight = Math.max(20, Math.round(height * 0.018));
+  let bluePixels = 0;
+  let sampled = 0;
+
+  for (let y = Math.max(0, center.y - halfHeight); y <= Math.min(height - 1, center.y + halfHeight); y += 1) {
+    for (let x = Math.max(0, center.x - halfWidth); x <= Math.min(width - 1, center.x + halfWidth); x += 1) {
+      const index = (y * width + x) * 4;
+      const alpha = data[index + 3];
+      if (alpha < 180) {
+        continue;
+      }
+      const { h, s, v } = rgbToHsv(data[index], data[index + 1], data[index + 2]);
+      sampled += 1;
+      if (h >= 190 && h <= 235 && s >= 0.35 && v >= 0.5) {
+        bluePixels += 1;
+      }
+    }
+  }
+
+  return sampled > 0 && bluePixels / sampled >= 0.18;
+}
+
 async function dumpUi(deviceId: string): Promise<string> {
   await adb(deviceId, ["shell", "uiautomator", "dump", UI_DUMP_PATH]);
   const result = await adb(deviceId, ["shell", "cat", UI_DUMP_PATH]);
@@ -469,6 +511,19 @@ async function dumpUi(deviceId: string): Promise<string> {
 async function captureScreen(deviceId: string): Promise<Buffer> {
   const result = await adbBuffer(deviceId, ["exec-out", "screencap", "-p"]);
   return result.stdout;
+}
+
+async function waitForPortraitScreenshot(deviceId: string): Promise<Buffer> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const screenshot = await captureScreen(deviceId);
+    const png = PNG.sync.read(screenshot);
+    if (png.height >= png.width) {
+      return screenshot;
+    }
+    await sleep(500);
+  }
+
+  throw new Error("考勤页面未能切换到竖屏，无法继续极速打卡初始化");
 }
 
 async function tap(deviceId: string, x: number, y: number): Promise<void> {
@@ -487,6 +542,37 @@ async function swipe(deviceId: string, from: { x: number; y: number }, to: { x: 
     String(to.x),
     String(to.y),
     "250",
+  ]);
+}
+
+async function openDingTalkApp(deviceId: string): Promise<void> {
+  log(`opening DingTalk app: ${DINGTALK_PACKAGE}`);
+  const resolved = await adb(deviceId, [
+    "shell",
+    "cmd",
+    "package",
+    "resolve-activity",
+    "--brief",
+    DINGTALK_PACKAGE,
+  ], { allowNonZero: true });
+  const activity = resolved.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.includes("/"));
+
+  if (activity) {
+    await adb(deviceId, ["shell", "am", "start", "-W", "-n", activity]);
+    return;
+  }
+
+  await adb(deviceId, [
+    "shell",
+    "monkey",
+    "-p",
+    DINGTALK_PACKAGE,
+    "-c",
+    "android.intent.category.LAUNCHER",
+    "1",
   ]);
 }
 
@@ -556,6 +642,76 @@ async function clickPunchButton(deviceId: string, slot: ClockInSlotConfig): Prom
   throw new Error(`已进入“考勤打卡”页面，但未识别到${slot.label}打卡按钮`);
 }
 
+async function openFastClockSettingsPage(deviceId: string): Promise<void> {
+  await openAttendancePageFromWorkbench(deviceId);
+  await sleep(FAST_CLOCK_SETUP_DELAY_MS);
+  const settingsPageScreenshot = PNG.sync.read(await waitForPortraitScreenshot(deviceId));
+  const settingsTabCenter = pointFromRatio(settingsPageScreenshot.width, settingsPageScreenshot.height, FAST_CLOCK_SETTINGS_TAB_POINT);
+  log("opening DingTalk attendance settings via bottom settings tab");
+  await tap(deviceId, settingsTabCenter.x, settingsTabCenter.y);
+  await sleep(FAST_CLOCK_SETUP_DELAY_MS);
+
+  const entryPageScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const fastClockEntryCenter = pointFromRatio(entryPageScreenshot.width, entryPageScreenshot.height, FAST_CLOCK_ENTRY_POINT);
+  log("opening DingTalk fast clock page");
+  await tap(deviceId, fastClockEntryCenter.x, fastClockEntryCenter.y);
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await sleep(FAST_CLOCK_PAGE_LOAD_DELAY_MS);
+    const xml = await dumpUi(deviceId);
+    if (xml.includes('text="极速打卡"')) {
+      return;
+    }
+  }
+
+  throw new Error("未能进入极速打卡页面");
+}
+
+async function maybeEnsureFastClockEnabled(deviceId: string): Promise<void> {
+  const state = await loadLocalCommandState();
+  if (state.fastClockVerifiedAt) {
+    return;
+  }
+
+  log("first run: verifying DingTalk fast clock settings");
+  await openFastClockSettingsPage(deviceId);
+  let screenshot = await captureScreen(deviceId);
+  const basePng = PNG.sync.read(screenshot);
+  const morningSwitchCenter = pointFromRatio(basePng.width, basePng.height, FAST_CLOCK_MORNING_SWITCH_POINT);
+  const eveningSwitchCenter = pointFromRatio(basePng.width, basePng.height, FAST_CLOCK_EVENING_SWITCH_POINT);
+  let changedAnySetting = false;
+
+  if (!isBlueSwitchEnabledInScreenshot(screenshot, FAST_CLOCK_MORNING_SWITCH_POINT)) {
+    log("enabling DingTalk fast clock setting: 上班极速打卡");
+    await tap(deviceId, morningSwitchCenter.x, morningSwitchCenter.y);
+    await sleep(FAST_CLOCK_SETUP_DELAY_MS);
+    changedAnySetting = true;
+  }
+
+  screenshot = await captureScreen(deviceId);
+  if (!isBlueSwitchEnabledInScreenshot(screenshot, FAST_CLOCK_EVENING_SWITCH_POINT)) {
+    log("enabling DingTalk fast clock setting: 下班极速打卡");
+    await tap(deviceId, eveningSwitchCenter.x, eveningSwitchCenter.y);
+    await sleep(FAST_CLOCK_SETUP_DELAY_MS);
+    changedAnySetting = true;
+  }
+
+  screenshot = await captureScreen(deviceId);
+  if (
+    !isBlueSwitchEnabledInScreenshot(screenshot, FAST_CLOCK_MORNING_SWITCH_POINT) ||
+    !isBlueSwitchEnabledInScreenshot(screenshot, FAST_CLOCK_EVENING_SWITCH_POINT)
+  ) {
+    throw new Error("极速打卡开关校验失败，未检测到上班/下班极速打卡均已开启");
+  }
+
+  await saveLocalCommandState({
+    ...state,
+    fastClockVerifiedAt: new Date().toISOString(),
+  });
+  log("DingTalk fast clock settings were enabled and persisted");
+  await exitDingTalk(deviceId);
+}
+
 async function exitDingTalk(deviceId: string): Promise<void> {
   await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_HOME"]);
   await sleep(500);
@@ -602,21 +758,15 @@ export async function runAttendanceCommand(opts?: {
     return { text: message };
   }
 
-  await openAttendancePageFromWorkbench(deviceId);
+  await maybeEnsureFastClockEnabled(deviceId);
+  await openDingTalkApp(deviceId);
   await sleep(OPEN_DELAY_MS);
-  if (activeSlot) {
-    await clickPunchButton(deviceId, activeSlot);
-  }
-  await sleep(EXIT_DELAY_MS);
   await exitDingTalk(deviceId);
   const clearResult = await clearRecentApps(deviceId);
 
-  const attendanceAction = activeSlot
-    ? `识别并点击${activeSlot.label}打卡按钮`
-    : "进入打卡页面（当前不在打卡时间窗内，未点击上/下班按钮）";
   const clearStatus = clearResult.cleared ? "并清除全部后台任务" : "未找到“清除全部”，已跳过后台清理";
   return {
-    text: `${scrcpyStatus}，已通过 adb 打开钉钉工作台、${attendanceAction}、后台退出钉钉，${clearStatus}。`,
+    text: `${scrcpyStatus}，已打开钉钉并等待约 ${Math.round(OPEN_DELAY_MS / 1000)} 秒，随后后台退出钉钉，${clearStatus}。`,
   };
 }
 
@@ -632,10 +782,8 @@ export class LocalCommandAgent implements Agent {
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const text = request.text.trim();
     if (text === "打卡") {
-      const slot = resolveManualClockInSlot(new Date());
       return await runAttendanceCommand({
         enforceTimeWindow: false,
-        overrideSlotId: slot.id,
       });
     }
     if (text === "退出钉钉") {
