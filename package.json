@@ -1,6 +1,15 @@
 {
   "private": true,
   "scripts": {
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "ios:action": "node ./scripts/ios/run-action.mjs",
+    "ios:appium": "appium server",
+    "ios:appium:install-driver": "appium driver install xcuitest",
+    "ios:doctor": "node ./scripts/ios/run-action.mjs doctor"
+  },
+  "devDependencies": {
+    "appium": "^3.2.2",
+    "appium-xcuitest-driver": "^10.36.4",
+    "webdriverio": "^9.27.0"
   }
 }

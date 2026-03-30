@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -58,6 +59,41 @@ const QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT = { xRatio: 0.49705, yRatio: 0.73819 };
 const QQ_FARM_STEAL_RUN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_STEAL_RUN_DELAY_MS ?? "4000", 10);
 const QQ_FARM_POST_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_POST_OPEN_DELAY_MS ?? "2500", 10);
 const QQ_FARM_FRIEND_PAGE_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_FRIEND_PAGE_DELAY_MS ?? "2500", 10);
+const DEFAULT_IOS_QQ_FARM_RESULT_COORD = JSON.stringify({ xRatio: 0.5, yRatio: 0.24 });
+const IOS_QQ_FARM_RESULT_COORD =
+  process.env.WEIXIN_IOS_QQ_FARM_RESULT_COORD?.trim() || DEFAULT_IOS_QQ_FARM_RESULT_COORD;
+const IOS_AUTOMATION_SCRIPT_PATH = path.resolve(process.cwd(), "../../scripts/ios/run-action.mjs");
+const CLEAR_ANDROID_DINGTALK_AFTER_CLOCK_IN = resolveBooleanEnv(
+  [
+    process.env.WEIXIN_ANDROID_CLEAR_DINGTALK_AFTER_CLOCK_IN,
+    process.env.WEIXIN_CLEAR_DINGTALK_AFTER_CLOCK_IN,
+  ],
+  true,
+);
+const CLEAR_ANDROID_RECENT_APPS_AFTER_CLOCK_IN = resolveBooleanEnv(
+  [
+    process.env.WEIXIN_ANDROID_CLEAR_RECENT_APPS_AFTER_CLOCK_IN,
+    process.env.WEIXIN_CLEAR_RECENT_APPS_AFTER_CLOCK_IN,
+  ],
+  true,
+);
+
+function buildDefaultIosAutomationCommand(action: string): string | undefined {
+  if (!existsSync(IOS_AUTOMATION_SCRIPT_PATH)) {
+    return undefined;
+  }
+  return `node ${JSON.stringify(IOS_AUTOMATION_SCRIPT_PATH)} ${action}`;
+}
+
+const IOS_DINGTALK_CLOCK_IN_COMMAND =
+  process.env.WEIXIN_IOS_DINGTALK_CLOCK_IN_COMMAND?.trim() ??
+  buildDefaultIosAutomationCommand("dingtalk-clock-in");
+const IOS_QQ_FARM_COMMAND =
+  process.env.WEIXIN_IOS_QQ_FARM_COMMAND?.trim() ??
+  buildDefaultIosAutomationCommand("qq-farm");
+const IOS_EXIT_DINGTALK_COMMAND =
+  process.env.WEIXIN_IOS_EXIT_DINGTALK_COMMAND?.trim() ??
+  buildDefaultIosAutomationCommand("exit-dingtalk");
 
 type CommandResult = {
   stdout: string;
@@ -73,9 +109,51 @@ type BinaryCommandResult = {
 
 type UINode = Record<string, string>;
 
+type DevicePlatform = "android" | "ios";
+
+type ConnectedDevice = {
+  platform: DevicePlatform;
+  id: string;
+  name: string;
+};
+
 type LocalCommandState = {
   fastClockVerifiedAt?: string;
 };
+
+type XcDeviceEntry = {
+  available?: boolean;
+  identifier?: string;
+  name?: string;
+  platform?: string;
+  simulator?: boolean;
+};
+
+type SystemProfilerUsbItem = {
+  _items?: SystemProfilerUsbItem[];
+  _name?: string;
+  device_name?: string;
+  manufacturer?: string;
+  product_name?: string;
+  serial_num?: string;
+  serial_num_truncated?: string;
+};
+
+function resolveBooleanEnv(values: Array<string | undefined>, defaultValue: boolean): boolean {
+  for (const rawValue of values) {
+    const normalized = rawValue?.trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+    if (["1", "true", "on", "yes"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "off", "no"].includes(normalized)) {
+      return false;
+    }
+  }
+  return defaultValue;
+}
 
 function log(message: string): void {
   console.log(`[local-command] ${message}`);
@@ -106,10 +184,14 @@ function commandString(command: string, args: string[]): string {
 async function runCommand(
   command: string,
   args: string[],
-  opts?: { allowNonZero?: boolean },
+  opts?: {
+    allowNonZero?: boolean;
+    env?: Record<string, string>;
+  },
 ): Promise<CommandResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
+      env: opts?.env ? { ...process.env, ...opts.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -176,7 +258,59 @@ async function runCommandBuffer(
   });
 }
 
-async function resolveDeviceId(): Promise<string> {
+async function runShellCommand(
+  command: string,
+  opts?: {
+    allowNonZero?: boolean;
+    env?: Record<string, string>;
+  },
+): Promise<CommandResult> {
+  return await runCommand(process.env.SHELL || "zsh", ["-lc", command], opts);
+}
+
+function isMissingCommandError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    return (error as { code?: unknown }).code === "ENOENT";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("ENOENT");
+}
+
+function normalizePlatform(value: string | undefined): DevicePlatform | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "android") {
+    return "android";
+  }
+  if (normalized === "ios" || normalized === "iphone") {
+    return "ios";
+  }
+  throw new Error(`不支持的设备平台 ${value}，请使用 android 或 ios`);
+}
+
+function isIosPlatformName(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return (
+    normalized.includes("iphone") ||
+    normalized.includes("ipad") ||
+    normalized.includes("ipod") ||
+    normalized.includes("iphoneos") ||
+    normalized.includes("ios")
+  );
+}
+
+function extractJsonArray(raw: string): string | undefined {
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) {
+    return undefined;
+  }
+  return raw.slice(start, end + 1);
+}
+
+async function listAndroidDevices(): Promise<ConnectedDevice[]> {
   const preferred = process.env.WEIXIN_DINGTALK_DEVICE_ID?.trim();
   const result = await runCommand("adb", ["devices", "-l"]);
   const deviceLines = result.stdout
@@ -187,20 +321,336 @@ async function resolveDeviceId(): Promise<string> {
   const devices = deviceLines
     .map((line) => line.split(/\s+/))
     .filter((parts) => parts[0] && parts[1] === "device")
-    .map((parts) => parts[0]);
+    .map((parts) => ({
+      platform: "android" as const,
+      id: parts[0],
+      name: parts[0],
+    }));
 
   if (preferred) {
-    if (!devices.includes(preferred)) {
+    if (!devices.some((device) => device.id === preferred)) {
       throw new Error(`未找到指定设备 ${preferred}`);
+    }
+  }
+
+  return devices;
+}
+
+async function listIosDevicesViaXcdevice(): Promise<ConnectedDevice[]> {
+  try {
+    const result = await runCommand("xcrun", ["xcdevice", "list", "--timeout", "5"], {
+      allowNonZero: true,
+    });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+
+    const json = extractJsonArray(result.stdout);
+    if (!json) {
+      return [];
+    }
+
+    const entries = JSON.parse(json) as XcDeviceEntry[];
+    return entries
+      .filter((entry) =>
+        entry.simulator !== true &&
+        entry.available !== false &&
+        typeof entry.identifier === "string" &&
+        entry.identifier.trim() &&
+        isIosPlatformName(entry.platform),
+      )
+      .map((entry) => ({
+        platform: "ios" as const,
+        id: entry.identifier!.trim(),
+        name: entry.name?.trim() || entry.identifier!.trim(),
+      }));
+  } catch (error) {
+    if (isMissingCommandError(error)) {
+      return [];
+    }
+    return [];
+  }
+}
+
+async function listIosDevicesViaXctrace(): Promise<ConnectedDevice[]> {
+  try {
+    const result = await runCommand("xcrun", ["xctrace", "list", "devices"], {
+      allowNonZero: true,
+    });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+
+    const devices: ConnectedDevice[] = [];
+    let inPhysicalDevicesSection = false;
+
+    for (const rawLine of result.stdout.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+      if (line === "== Devices ==") {
+        inPhysicalDevicesSection = true;
+        continue;
+      }
+      if (line.startsWith("== ") && line !== "== Devices ==") {
+        inPhysicalDevicesSection = false;
+        continue;
+      }
+      if (!inPhysicalDevicesSection || line.includes("(Simulator)")) {
+        continue;
+      }
+
+      const match = line.match(/^(.*)\s+\(([^()]*)\)\s+\(([0-9A-Fa-f-]+)\)$/);
+      if (!match) {
+        continue;
+      }
+
+      const [, name, osOrModel, id] = match;
+      if (!isIosPlatformName(`${name} ${osOrModel}`)) {
+        continue;
+      }
+
+      devices.push({
+        platform: "ios",
+        id: id.trim(),
+        name: name.trim(),
+      });
+    }
+
+    return devices;
+  } catch (error) {
+    if (isMissingCommandError(error)) {
+      return [];
+    }
+    return [];
+  }
+}
+
+async function listIosDevicesViaIdeviceId(): Promise<ConnectedDevice[]> {
+  try {
+    const result = await runCommand("idevice_id", ["-l"], {
+      allowNonZero: true,
+    });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+
+    return result.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((id) => ({
+        platform: "ios" as const,
+        id,
+        name: id,
+      }));
+  } catch (error) {
+    if (isMissingCommandError(error)) {
+      return [];
+    }
+    return [];
+  }
+}
+
+function collectSystemProfilerUsbItems(
+  items: SystemProfilerUsbItem[] | undefined,
+  output: SystemProfilerUsbItem[] = [],
+): SystemProfilerUsbItem[] {
+  if (!items) {
+    return output;
+  }
+
+  for (const item of items) {
+    output.push(item);
+    collectSystemProfilerUsbItems(item._items, output);
+  }
+
+  return output;
+}
+
+function looksLikeIosUsbDevice(item: SystemProfilerUsbItem): boolean {
+  const haystack = [
+    item._name,
+    item.device_name,
+    item.product_name,
+    item.manufacturer,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    haystack.includes("iphone") ||
+    haystack.includes("ipad") ||
+    haystack.includes("ipod")
+  );
+}
+
+async function listIosDevicesViaSystemProfiler(): Promise<ConnectedDevice[]> {
+  try {
+    const result = await runCommand("system_profiler", ["SPUSBDataType", "-json"], {
+      allowNonZero: true,
+    });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+
+    const parsed = JSON.parse(result.stdout) as {
+      SPUSBDataType?: SystemProfilerUsbItem[];
+    };
+    const usbItems = collectSystemProfilerUsbItems(parsed.SPUSBDataType);
+
+    return usbItems
+      .filter(looksLikeIosUsbDevice)
+      .map((item) => ({
+        platform: "ios" as const,
+        id: item.serial_num?.trim() || item.serial_num_truncated?.trim() || item._name?.trim() || "ios-usb-device",
+        name: item.device_name?.trim() || item.product_name?.trim() || item._name?.trim() || "iPhone",
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function dedupeDevices(devices: ConnectedDevice[]): ConnectedDevice[] {
+  const seen = new Set<string>();
+  const deduped: ConnectedDevice[] = [];
+  for (const device of devices) {
+    const key = `${device.platform}:${device.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(device);
+  }
+  return deduped;
+}
+
+async function listIosDevices(): Promise<ConnectedDevice[]> {
+  const preferred = process.env.WEIXIN_IOS_DEVICE_ID?.trim();
+  const devices = dedupeDevices([
+    ...(await listIosDevicesViaXcdevice()),
+    ...(await listIosDevicesViaXctrace()),
+    ...(await listIosDevicesViaIdeviceId()),
+    ...(await listIosDevicesViaSystemProfiler()),
+  ]);
+
+  if (preferred) {
+    if (!devices.some((device) => device.id === preferred)) {
+      throw new Error(`未找到指定的 iOS 设备 ${preferred}`);
+    }
+  }
+
+  return devices;
+}
+
+function pickPreferredDevice(devices: ConnectedDevice[], opts: {
+  preferredId?: string;
+  missingMessage: string;
+}): ConnectedDevice {
+  if (devices.length === 0) {
+    throw new Error(opts.missingMessage);
+  }
+
+  if (opts.preferredId) {
+    const preferred = devices.find((device) => device.id === opts.preferredId);
+    if (!preferred) {
+      throw new Error(`未找到指定设备 ${opts.preferredId}`);
     }
     return preferred;
   }
 
-  if (devices.length === 0) {
-    throw new Error("未检测到 adb 设备");
+  return devices[0];
+}
+
+async function resolveAndroidDevice(): Promise<ConnectedDevice> {
+  return pickPreferredDevice(await listAndroidDevices(), {
+    preferredId: process.env.WEIXIN_DINGTALK_DEVICE_ID?.trim(),
+    missingMessage: "未检测到 adb 设备",
+  });
+}
+
+async function resolveIosDevice(): Promise<ConnectedDevice> {
+  return pickPreferredDevice(await listIosDevices(), {
+    preferredId: process.env.WEIXIN_IOS_DEVICE_ID?.trim(),
+    missingMessage: "未检测到可用的 iOS 设备",
+  });
+}
+
+async function shellCommandExists(commandName: string): Promise<boolean> {
+  const result = await runShellCommand(`command -v ${commandName} >/dev/null 2>&1`, {
+    allowNonZero: true,
+  });
+  return result.exitCode === 0;
+}
+
+async function hasFullXcodeDeviceTools(): Promise<boolean> {
+  const xcdevice = await runCommand("xcrun", ["--find", "xcdevice"], {
+    allowNonZero: true,
+  }).catch(() => ({ exitCode: 1 }));
+  const xctrace = await runCommand("xcrun", ["--find", "xctrace"], {
+    allowNonZero: true,
+  }).catch(() => ({ exitCode: 1 }));
+  return xcdevice.exitCode === 0 || xctrace.exitCode === 0;
+}
+
+async function resolveNoDeviceErrorMessage(): Promise<string> {
+  const hints: string[] = [];
+  const [hasAdb, hasIdeviceId, hasXcodeTools, usbIosDevices] = await Promise.all([
+    shellCommandExists("adb"),
+    shellCommandExists("idevice_id"),
+    hasFullXcodeDeviceTools(),
+    listIosDevicesViaSystemProfiler(),
+  ]);
+
+  if (!hasAdb) {
+    hints.push("未安装 adb（Android 检测与控制不可用）");
+  }
+  if (!hasIdeviceId && !hasXcodeTools) {
+    hints.push("未安装 iPhone 检测工具（需完整 Xcode 或 libimobiledevice）");
+  }
+  if (usbIosDevices.length === 0) {
+    hints.push("当前没有检测到已连接的 USB iPhone/iPad");
   }
 
-  return devices[0];
+  if (hints.length === 0) {
+    return "未检测到可用设备，请连接 Android adb 设备或 iPhone 设备";
+  }
+
+  return `未检测到可用设备。${hints.join("；")}。`;
+}
+
+async function resolveConnectedDevice(): Promise<ConnectedDevice> {
+  const preferredPlatform = normalizePlatform(process.env.WEIXIN_DEVICE_PLATFORM);
+  if (preferredPlatform === "android") {
+    return await resolveAndroidDevice();
+  }
+  if (preferredPlatform === "ios") {
+    return await resolveIosDevice();
+  }
+
+  const androidDevices = await listAndroidDevices().catch((error) => {
+    if (isMissingCommandError(error)) {
+      return [];
+    }
+    throw error;
+  });
+  const iosDevices = await listIosDevices();
+
+  if (androidDevices.length > 0 && iosDevices.length > 0) {
+    throw new Error(
+      "同时检测到 Android 和 iOS 设备，请设置 WEIXIN_DEVICE_PLATFORM=android 或 WEIXIN_DEVICE_PLATFORM=ios",
+    );
+  }
+  if (androidDevices.length > 0) {
+    return androidDevices[0];
+  }
+  if (iosDevices.length > 0) {
+    return iosDevices[0];
+  }
+
+  throw new Error(await resolveNoDeviceErrorMessage());
 }
 
 async function adb(deviceId: string, args: string[], opts?: { allowNonZero?: boolean }): Promise<CommandResult> {
@@ -1001,16 +1451,117 @@ async function openQqFarmMiniProgram(deviceId: string): Promise<void> {
   throw new Error("未能通过微信搜索或快捷入口打开 QQ经典农场 小程序");
 }
 
+function summarizeCommandOutput(result: CommandResult): string | undefined {
+  const combined = [result.stdout.trim(), result.stderr.trim()]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!combined) {
+    return undefined;
+  }
+  return combined.replace(/\s+/g, " ").slice(0, 160);
+}
+
+function resolveRequiredIosCommand(command: string | undefined, envName: string, actionLabel: string): string {
+  if (!command) {
+    throw new Error(
+      `已检测到 iOS 设备，但未配置 ${envName}，无法执行${actionLabel}。请先配置对应的 iPhone 自动化命令。`,
+    );
+  }
+  return command;
+}
+
+function platformLabel(platform: DevicePlatform): string {
+  return platform === "ios" ? "iPhone" : "Android";
+}
+
+function shouldClearIosDingTalkAfterClockIn(): boolean {
+  return resolveBooleanEnv(
+    [
+      process.env.WEIXIN_IOS_CLEAR_DINGTALK_AFTER_CLOCK_IN,
+      process.env.WEIXIN_CLEAR_DINGTALK_AFTER_CLOCK_IN,
+    ],
+    true,
+  );
+}
+
+function buildAttendanceSuccessText(args: {
+  device: ConnectedDevice;
+  closedDingTalk: boolean;
+  clearedRecents: boolean;
+  extraNote?: string;
+}): string {
+  const parts = [
+    `已识别 ${platformLabel(args.device.platform)} 设备 ${args.device.name}`,
+    "已执行钉钉打卡流程",
+  ];
+
+  if (args.closedDingTalk) {
+    parts.push("并在后台关闭钉钉");
+  }
+  if (args.clearedRecents) {
+    parts.push("并清理后台任务");
+  }
+  if (args.extraNote) {
+    parts.push(args.extraNote);
+  }
+
+  return `${parts.join("，")}。`;
+}
+
+function buildExitDingTalkSuccessText(device: ConnectedDevice): string {
+  return `已识别 ${platformLabel(device.platform)} 设备 ${device.name}，已在后台关闭钉钉。`;
+}
+
+function buildQqFarmSuccessText(args: {
+  device: ConnectedDevice;
+  openedOnly?: boolean;
+  extraNote?: string;
+}): string {
+  if (args.openedOnly) {
+    return `已识别 ${platformLabel(args.device.platform)} 设备 ${args.device.name}，已打开 QQ经典农场，但尚未执行收菜/偷菜点击${args.extraNote ? `：${args.extraNote}` : ""}。`;
+  }
+
+  if (args.extraNote) {
+    return `已识别 ${platformLabel(args.device.platform)} 设备 ${args.device.name}，已执行 QQ经典农场 流程：${args.extraNote}。`;
+  }
+
+  return `已识别 ${platformLabel(args.device.platform)} 设备 ${args.device.name}，已执行 QQ经典农场 流程。`;
+}
+
+async function runIosAutomationCommand(args: {
+  device: ConnectedDevice;
+  command: string;
+  action: string;
+  clockInSlot?: ClockInSlotConfig;
+}): Promise<CommandResult> {
+  const env: Record<string, string> = {
+    WEIXIN_CONNECTED_DEVICE_PLATFORM: args.device.platform,
+    WEIXIN_CONNECTED_DEVICE_ID: args.device.id,
+    WEIXIN_CONNECTED_DEVICE_NAME: args.device.name,
+    WEIXIN_IOS_DEVICE_ID: args.device.id,
+    WEIXIN_IOS_DEVICE_NAME: args.device.name,
+    WEIXIN_AUTOMATION_ACTION: args.action,
+  };
+
+  if (args.clockInSlot) {
+    env.WEIXIN_CLOCK_IN_SLOT_ID = args.clockInSlot.id;
+    env.WEIXIN_CLOCK_IN_SLOT_LABEL = args.clockInSlot.label;
+  }
+  if (args.action === "qq-farm") {
+    env.WEIXIN_IOS_QQ_FARM_RESULT_COORD = IOS_QQ_FARM_RESULT_COORD;
+  }
+
+  log(`running iOS automation action=${args.action} device=${args.device.name} (${args.device.id})`);
+  return await runShellCommand(args.command, { env });
+}
+
 export async function runAttendanceCommand(opts?: {
   headless?: boolean;
   enforceTimeWindow?: boolean;
   throwOnOutsideWindow?: boolean;
   overrideSlotId?: ClockInSlotId;
 }): Promise<ChatResponse> {
-  const deviceId = await resolveDeviceId();
-  const scrcpyStatus = opts?.headless
-    ? "已切换为纯后台执行"
-    : await ensureScrcpyRunning(deviceId);
   const enforceTimeWindow = opts?.enforceTimeWindow ?? true;
   const activeSlot = opts?.overrideSlotId
     ? CLOCK_IN_SLOTS.find((slot) => slot.id === opts.overrideSlotId)
@@ -1024,31 +1575,116 @@ export async function runAttendanceCommand(opts?: {
     return { text: message };
   }
 
-  await maybeEnsureFastClockEnabled(deviceId);
-  await openDingTalkApp(deviceId);
-  await sleep(OPEN_DELAY_MS);
-  await exitDingTalk(deviceId);
-  const clearResult = await clearRecentApps(deviceId);
+  const device = await resolveConnectedDevice();
+  if (device.platform === "ios") {
+    await runIosAutomationCommand({
+      device,
+      command: resolveRequiredIosCommand(
+        IOS_DINGTALK_CLOCK_IN_COMMAND,
+        "WEIXIN_IOS_DINGTALK_CLOCK_IN_COMMAND",
+        "钉钉打卡",
+      ),
+      action: "dingtalk-clock-in",
+      clockInSlot: activeSlot,
+    });
+    return {
+      text: buildAttendanceSuccessText({
+        device,
+        closedDingTalk: shouldClearIosDingTalkAfterClockIn(),
+        clearedRecents: false,
+      }),
+    };
+  }
 
-  const clearStatus = clearResult.cleared ? "并清除全部后台任务" : "未找到“清除全部”，已跳过后台清理";
+  const scrcpyStatus = opts?.headless
+    ? "已切换为纯后台执行"
+    : await ensureScrcpyRunning(device.id);
+
+  await maybeEnsureFastClockEnabled(device.id);
+  await openDingTalkApp(device.id);
+  await sleep(OPEN_DELAY_MS);
+  let clearedRecents = false;
+  let extraNote: string | undefined;
+  if (CLEAR_ANDROID_DINGTALK_AFTER_CLOCK_IN) {
+    await exitDingTalk(device.id);
+    if (CLEAR_ANDROID_RECENT_APPS_AFTER_CLOCK_IN) {
+      const clearResult = await clearRecentApps(device.id);
+      clearedRecents = clearResult.cleared;
+      if (!clearResult.cleared) {
+        extraNote = "未找到“清除全部”，已跳过后台清理";
+      }
+    }
+  } else {
+    extraNote = "已保留钉钉前台状态";
+  }
+
   return {
-    text: `${scrcpyStatus}，已打开钉钉并等待约 ${Math.round(OPEN_DELAY_MS / 1000)} 秒，随后后台退出钉钉，${clearStatus}。`,
+    text: buildAttendanceSuccessText({
+      device,
+      closedDingTalk: CLEAR_ANDROID_DINGTALK_AFTER_CLOCK_IN,
+      clearedRecents,
+      extraNote: `${scrcpyStatus}，约等待 ${Math.round(OPEN_DELAY_MS / 1000)} 秒${extraNote ? `，${extraNote}` : ""}`,
+    }),
   };
 }
 
 export async function runQqFarmCommand(): Promise<ChatResponse> {
-  const deviceId = await resolveDeviceId();
-  await openQqFarmMiniProgram(deviceId);
-  await runQqFarmRoutine(deviceId);
+  const device = await resolveConnectedDevice();
+  if (device.platform === "ios") {
+    const result = await runIosAutomationCommand({
+      device,
+      command: resolveRequiredIosCommand(
+        IOS_QQ_FARM_COMMAND,
+        "WEIXIN_IOS_QQ_FARM_COMMAND",
+        "QQ 农场偷菜",
+      ),
+      action: "qq-farm",
+    });
+    const summary = summarizeCommandOutput(result);
+    return {
+      text:
+        summary?.includes("暂未执行收菜/偷菜画布点击")
+          ? buildQqFarmSuccessText({
+              device,
+              openedOnly: true,
+              extraNote: "请配置 WEIXIN_IOS_QQ_FARM_CANVAS_STEPS",
+            })
+          : buildQqFarmSuccessText({
+              device,
+              extraNote: summary,
+            }),
+    };
+  }
+
+  await openQqFarmMiniProgram(device.id);
+  await runQqFarmRoutine(device.id);
   return {
-    text: "已进入 QQ经典农场，并执行弹框处理、收菜与好友偷菜流程。",
+    text: buildQqFarmSuccessText({
+      device,
+      extraNote: "已完成弹框处理、收菜与好友偷菜",
+    }),
   };
 }
 
 async function handleExitDingTalkCommand(): Promise<ChatResponse> {
-  const deviceId = await resolveDeviceId();
-  await exitDingTalk(deviceId);
-  return { text: "已退出钉钉。" };
+  const device = await resolveConnectedDevice();
+  if (device.platform === "ios") {
+    await runIosAutomationCommand({
+      device,
+      command: resolveRequiredIosCommand(
+        IOS_EXIT_DINGTALK_COMMAND,
+        "WEIXIN_IOS_EXIT_DINGTALK_COMMAND",
+        "退出钉钉",
+      ),
+      action: "exit-dingtalk",
+    });
+    return {
+      text: buildExitDingTalkSuccessText(device),
+    };
+  }
+
+  await exitDingTalk(device.id);
+  return { text: buildExitDingTalkSuccessText(device) };
 }
 
 export class LocalCommandAgent implements Agent {

@@ -1,166 +1,253 @@
-# weixin-agent-sdk
+# auto-DingTalk-checkin
 
 > 本项目非微信官方项目，代码由 [@tencent-weixin/openclaw-weixin](https://npmx.dev/package/@tencent-weixin/openclaw-weixin) 改造而来，仅供学习交流使用。
 
-微信 AI Agent 桥接框架 —— 通过简单的 Agent 接口，将任意 AI 后端接入微信。
-
-## 产品特点
-
-按“启动后到一天内”的时间顺序，当前产品行为如下：
-
-1. 启动时：每次 `start` 前都会强制重新走一次微信扫码登录；在 macOS 上默认还会启用 `caffeinate` 防休眠，锁屏但不合盖时也能继续后台运行。
-2. 登录后：微信收到的消息会桥接给 ACP Agent 处理，支持 Codex、Claude Code、kimi-cli 等兼容 ACP 的 Agent，也支持多轮对话和图片等附件。
-3. 需要本地动作时：微信发 `打卡`，会通过 adb 打开钉钉工作台，进入 `考勤打卡` 页面，并用截图识别的方式兼容横屏和竖屏，自动点击上班或下班按钮；不在规定时间窗内则不会执行点击。
-4. 随时可用：微信发 `偷菜`，会通过 adb 打开微信，搜索 `qqjingdiannongchang`，并进入 `QQ经典农场` 小程序。
-5. 每隔 `5` 分钟：自动执行一次进入 `QQ经典农场` 小程序的流程。
-6. 随时可用：支持 `退出钉钉`、`/echo`、`/toggle-debug` 等本地命令。
-7. 每天 `08:00`：主动向最近交互过的微信会话发送市场价格简报。
-8. 工作日 `09:01-09:10`：随机执行一次上班打卡。
-9. 每天 `09:05`：主动发送一条晨间鼓励文案。
-10. 工作日 `18:10-18:20`：随机执行一次下班打卡。
-11. 调整时间时：上下班打卡时间窗统一在 `packages/agent-acp/src/clock-in-config.ts` 修改。
-
-主动发送类功能第一次启用前，需要你先手动给 bot 发过一条消息，用来建立会话上下文。
+当前仓库实际是一个「微信 Agent 桥接 + ACP 接入 + 本地设备自动化」的 monorepo。除了把 Codex、Claude Code、kimi-cli 这类 Agent 接进微信，也内置了钉钉打卡、QQ 经典农场和定时主动消息。
 
 ## 项目结构
 
-```
+```text
 packages/
-  sdk/                  weixin-agent-sdk —— 微信桥接 SDK
-  agent-acp/            ACP (Agent Client Protocol) 适配器
-  example-openai/       基于 OpenAI 的示例
+  sdk/                  weixin-agent-sdk，微信桥接 SDK
+  agent-acp/            weixin-acp，ACP Agent 适配器和本地自动化入口
+  example-openai/       基于 OpenAI 的示例 bot
+scripts/
+  ios/run-action.mjs    iPhone 自动化脚本（Appium + XCUITest）
 ```
 
-## 通过 ACP 接入 Claude Code, Codex, kimi-cli 等 Agent
+## 功能概览
 
-[ACP (Agent Client Protocol)](https://agentclientprotocol.com/) 是一个开放的 Agent 通信协议。如果你已有兼容 ACP 的 agent，可以直接通过 [`weixin-acp`](https://www.npmjs.com/package/weixin-acp) 接入微信，无需编写任何代码。
+- 每次启动 `weixin-acp start` 前都会重新扫码登录微信。
+- 支持通过 ACP 接入 Codex、Claude Code、kimi-cli 等 Agent。
+- 微信内置本地命令：`打卡`、`偷菜`、`退出钉钉`。
+- Android 和 iPhone 共用同一套命令语义，默认自动识别连接设备，也支持手动指定平台。
+- 自动打卡调度：工作日 `09:01-09:10` 随机上班打卡，`18:10-18:20` 随机下班打卡。
+- 自动偷菜调度：默认每 `5` 分钟执行一次进入 `QQ经典农场` 的流程。
+- 主动消息：每天 `08:00` 市场价格简报，每天 `09:05` 晨间鼓励。
+- 支持文本、图片、语音、视频、文件消息，以及图片/视频/文件回复。
 
+主动消息第一次启用前，需要你先手动给 bot 发过一条消息，用来建立可复用的会话上下文。
 
-### 扫码登录
+## 快速开始
 
-`start` 命令现在会在每次启动前强制走一次微信扫码登录；如果你只想单独测试登录，也可以手动执行：
+### 环境要求
+
+- Node.js `>= 22`
+- `pnpm`
+- Android 自动化需要 `adb`
+- iPhone 自动化需要完整 Xcode、Appium 和真机签名环境
+
+### 安装依赖
+
+```bash
+corepack enable
+corepack pnpm install
+```
+
+### 仅扫码登录
+
+```bash
+corepack pnpm --filter weixin-acp login
+```
+
+如果你使用已发布的 CLI，也可以直接执行：
 
 ```bash
 npx weixin-acp login
 ```
 
-如果你希望在 `start` 模式下每次扫码成功后只提示“登录成功”并立即退出进程，而不是继续启动 bot，可设置：
+### 启动 ACP Agent
+
+Codex:
 
 ```bash
-WEIXIN_EXIT_AFTER_LOGIN=1 npx weixin-acp start -- codex-acp
-```
-
-这个模式只完成扫码登录，不会进入消息循环。
-
-扫码成功后，程序会尽量向微信主动推送一条“登录成功”提示；但这依赖于扫码用户之前已经和 bot 建立过可用会话上下文。如果没有现成的会话 `contextToken`，登录本身仍然会成功，只是不会发出这条提示。
-
-在 macOS 上，`start()` / `weixin-acp start` 默认会自动启用 `caffeinate` 防休眠，所以锁定屏幕后 bot 仍可继续在后台运行。这个保活只覆盖“锁屏但机器未合盖”的场景；如果合上笔记本或系统主动关机，进程仍会中断。若你确实要关闭这项行为，可设置 `WEIXIN_MACOS_KEEP_AWAKE=0`。
-
-### Claude Code
-
-```bash
-# 安装 claude-agent-acp
-npm install -g @zed-industries/claude-agent-acp
-
-# 启动 agent（会先要求重新扫码登录微信）
-npx weixin-acp start -- claude-agent-acp
-```
-
-### Codex
-
-```bash
-# 安装 codex-acp
 npm install -g @zed-industries/codex-acp
-
-# 启动 agent（会先要求重新扫码登录微信）
-# 若未显式传 -c model=...，weixin-acp 会默认补成 gpt-5.4
-npx weixin-acp start -- codex-acp
+corepack pnpm --filter weixin-acp start -- -- codex-acp
 ```
 
-如果你使用的是本仓库里 `打卡` 这类 adb 本地命令，当前实现会先通过钉钉 deep link 打开工作台应用列表，再基于 UI 节点定位并进入 `考勤打卡` 页面；进入页面后会用截图识别横屏/竖屏下的大圆打卡按钮，并且只有在配置的上下班时间窗内才会执行点击，不再依赖桌面卡片的固定坐标。`scrcpy` 只是尽量启动来显示画面，不是硬依赖。锁屏后即使无法拉起前台窗口，也会继续走后台 adb 流程。
+如果没有显式传 `-c model=...`，`weixin-acp` 会默认给 `codex-acp` 补上 `gpt-5.4`。
 
-如果你想在桌面上看到手机画面，可以先安装 `scrcpy`：
+Claude Code:
 
 ```bash
-# macOS (Homebrew)
-brew install scrcpy android-platform-tools
+npm install -g @zed-industries/claude-agent-acp
+corepack pnpm --filter weixin-acp start -- -- claude-agent-acp
+```
 
-# Ubuntu / Debian
+kimi-cli:
+
+```bash
+corepack pnpm --filter weixin-acp start -- -- kimi acp
+```
+
+也可以接自己的 ACP 命令：
+
+```bash
+corepack pnpm --filter weixin-acp start -- -- node ./my-agent.js
+```
+
+如果你使用的是已发布的 CLI，也可以把上面的启动命令替换成 `npx weixin-acp start -- ...`。
+
+常用启动相关环境变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `WEIXIN_EXIT_AFTER_LOGIN=1` | 只完成扫码登录，成功后立即退出 |
+| `WEIXIN_MACOS_KEEP_AWAKE=0` | 关闭 macOS 默认的 `caffeinate` 防休眠 |
+
+## 本地自动化
+
+### 统一命令入口
+
+微信里直接发送：
+
+- `打卡`
+- `偷菜`
+- `退出钉钉`
+
+这三个命令在 Android 和 iPhone 上保持同一套入口和返回语义：
+
+| 命令 | Android | iPhone |
+| --- | --- | --- |
+| `打卡` | 通过 `adb` 打开钉钉，进入 `工作台 -> 考勤打卡`，在有效时间窗内点击打卡 | 通过内置 `Appium + XCUITest` 脚本进入钉钉并执行同样流程 |
+| `偷菜` | 通过 `adb` 打开微信并进入 `QQ经典农场` | 通过 iPhone 自动化脚本进入微信并打开 `QQ经典农场` |
+| `退出钉钉` | 关闭钉钉 | 关闭钉钉 |
+
+默认行为：
+
+- 自动检测当前连接的是 Android 还是 iPhone。
+- 如果同时连着两种设备，需显式设置 `WEIXIN_DEVICE_PLATFORM=android` 或 `WEIXIN_DEVICE_PLATFORM=ios`。
+- `打卡` 完成后默认会清掉钉钉后台。
+- 若钉钉出现验证码、滑块、人脸或其他安全校验，需要先人工处理，自动化不会替你过风控。
+
+### 自动任务
+
+| 功能 | 默认行为 | 关闭方式 |
+| --- | --- | --- |
+| 自动打卡 | 工作日早晚各随机执行一次 | `WEIXIN_AUTO_CLOCK_IN=0` |
+| 自动偷菜 | 每 `5` 分钟执行一次 | `WEIXIN_AUTO_QQ_FARM=0` |
+| 晨间鼓励 | 每天 `09:05` 主动发送 | `WEIXIN_DAILY_MOTIVATION=0` |
+| 市场简报 | 每天 `08:00` 主动发送 | `WEIXIN_DAILY_CRYPTO_BRIEFING=0` |
+
+自动打卡时间窗统一在 [`packages/agent-acp/src/clock-in-config.ts`](./packages/agent-acp/src/clock-in-config.ts) 调整。
+
+### 常用自动化环境变量
+
+| 变量 | 说明 |
+| --- | --- |
+| `WEIXIN_DEVICE_PLATFORM` | 强制指定当前使用 `android` 或 `ios` |
+| `WEIXIN_CLEAR_DINGTALK_AFTER_CLOCK_IN=0` | 关闭 Android/iPhone 共用的“打卡后自动关闭钉钉”行为 |
+| `WEIXIN_ANDROID_CLEAR_RECENT_APPS_AFTER_CLOCK_IN=0` | 仅 Android，关闭清理最近任务列表 |
+| `WEIXIN_QQ_FARM_INTERVAL_MINUTES=10` | 修改自动偷菜轮询间隔 |
+| `WEIXIN_QQ_FARM_QUERY_PREFIX=...` | Android 侧修改 QQ 农场搜索前缀 |
+| `WEIXIN_QQ_FARM_PINYIN_QUERY=...` | Android 侧修改 QQ 农场拼音搜索词 |
+| `WEIXIN_CRYPTO_IDS=btc,eth,sol` | 修改市场简报币种列表 |
+| `WEIXIN_CRYPTO_QUOTE_ASSET=USDT` | 修改市场简报报价币种 |
+
+## Android 配置
+
+Android 侧依赖 `adb`。`scrcpy` 只用于辅助看画面，不是必须。
+
+macOS:
+
+```bash
+brew install android-platform-tools scrcpy
+adb devices
+```
+
+Linux:
+
+```bash
 sudo apt update
-sudo apt install -y scrcpy adb
-
-# Arch Linux
-sudo pacman -S scrcpy android-tools
+sudo apt install -y adb scrcpy
+adb devices
 ```
 
-Windows 可以直接用 `winget`：
+确认 `adb devices` 能看到手机后，再发微信命令 `打卡` / `偷菜` 即可。
 
-```powershell
-winget install Genymobile.scrcpy
-```
+## iPhone 配置
 
-安装完成后，先用 USB 或无线 adb 连上手机，再执行本项目即可。
+仓库内置了 [`scripts/ios/run-action.mjs`](./scripts/ios/run-action.mjs)，默认用 `Appium + XCUITest + WebDriverAgent` 处理 iPhone 上的 `打卡`、`偷菜`、`退出钉钉`。
 
-当前仓库还内置了自动打卡调度：默认会按中国法定工作日，在每天 `09:01` 到 `09:10` 之间随机执行一次上班打卡，并在 `18:10` 到 `18:20` 之间随机执行一次下班打卡，复用同一套后台 adb 流程。微信里手动发送 `打卡` 仍然随时可用。工作日判定依赖节假日接口；若接口暂时不可用，当天会延后重试，不会盲目执行。若要关闭这项能力，可设置 `WEIXIN_AUTO_CLOCK_IN=0`。
+### 前置要求
 
-上下班时间窗统一定义在 `packages/agent-acp/src/clock-in-config.ts`。
+至少需要：
 
-另外，`weixin-acp` 现在还内置了 `QQ经典农场` 的入口自动化：默认每隔 `5` 分钟会通过 adb 拉起微信，搜索 `qqjingdiannongchang`，再点击顶部结果卡片进入 `QQ经典农场` 小程序；微信里手动发送 `偷菜` 也会立即执行同一条链路。若要关闭这项能力，可设置 `WEIXIN_AUTO_QQ_FARM=0`；若要调整轮询间隔，可设置 `WEIXIN_QQ_FARM_INTERVAL_MINUTES=10` 这类分钟值；若要更换搜索词，可设置 `WEIXIN_QQ_FARM_QUERY=...`。
-
-另外，`weixin-acp` 还会在每天 `09:05` 主动给最近与你交互过的微信会话发送一段积极、阳光的晨间鼓励文案。第一次启用后，请先手动给 bot 发一条消息，用来建立主动发送所需的会话上下文；之后它就能按计划主动发消息。若要关闭这项能力，可设置 `WEIXIN_DAILY_MOTIVATION=0`。
-
-同时，`weixin-acp` 还会在每天 `08:00` 主动发送一条市场价格简报，默认包含 `BTC / ETH / SOL / BNB / XRP / DOGE` 的 `USDT` 价格和 24 小时涨跌幅，以及 `LBMA PM` 黄金定盘价和较上一条定盘的涨跌幅。第一次启用前同样需要你先手动给 bot 发过一条消息，以建立主动发送上下文。若要关闭这项能力，可设置 `WEIXIN_DAILY_CRYPTO_BRIEFING=0`；若要改币种列表，可设置 `WEIXIN_CRYPTO_IDS=btc,eth,...` 这种逗号分隔列表；若要改报价币种，可设置 `WEIXIN_CRYPTO_QUOTE_ASSET=USDT`。
-
-### kimi-cli
+1. 安装完整 Xcode，而不只是 Command Line Tools
+2. 执行：
 
 ```bash
-# 启动 agent（会先要求重新扫码登录微信）
-npx weixin-acp start -- kimi acp
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch
 ```
 
-`--` 后面的部分就是你的 ACP agent 启动命令，`weixin-acp` 会自动以子进程方式启动它，通过 JSON-RPC over stdio 进行通信。
+3. iPhone 开启 `Developer Mode`
+4. USB 连接手机，并在手机上点“信任”
+5. Xcode 登录 Apple ID，并为 `WebDriverAgentRunner` 配置可用签名
+6. 手机上信任开发者证书
 
-更多 ACP 兼容 agent 请参考 [ACP agent 列表](https://agentclientprotocol.com/get-started/agents)。
+安装辅助依赖：
 
-## 自定义 Agent
-
-SDK 只导出三样东西：
-
-- **`Agent`** 接口 —— 实现它就能接入微信
-- **`login()`** —— 扫码登录
-- **`start(agent)`** —— 每次启动前重新扫码登录，然后启动消息循环
-
-### Agent 接口
-
-```typescript
-interface Agent {
-  chat(request: ChatRequest): Promise<ChatResponse>;
-}
-
-interface ChatRequest {
-  conversationId: string;         // 用户标识，可用于维护多轮对话
-  text: string;                   // 文本内容
-  media?: {                       // 附件（图片/语音/视频/文件）
-    type: "image" | "audio" | "video" | "file";
-    filePath: string;             // 本地文件路径（已下载解密）
-    mimeType: string;
-    fileName?: string;
-  };
-}
-
-interface ChatResponse {
-  text?: string;                  // 回复文本（支持 markdown，发送前自动转纯文本）
-  media?: {                       // 回复媒体
-    type: "image" | "video" | "file";
-    url: string;                  // 本地路径或 HTTPS URL
-    fileName?: string;
-  };
-}
+```bash
+brew install libimobiledevice
+corepack pnpm ios:appium:install-driver
 ```
 
-### 最简示例
+### 常用命令
 
-```typescript
+```bash
+corepack pnpm ios:doctor
+corepack pnpm ios:appium
+corepack pnpm ios:action -- doctor
+corepack pnpm ios:action -- dingtalk-clock-in
+corepack pnpm ios:action -- qq-farm
+corepack pnpm ios:action -- exit-dingtalk
+```
+
+### 常用 iPhone 环境变量
+
+| 变量 | 说明 |
+| --- | --- |
+| `WEIXIN_IOS_DEVICE_ID` | 指定真机设备 ID |
+| `WEIXIN_IOS_APPIUM_SERVER_URL` | Appium 地址，默认 `http://127.0.0.1:4723` |
+| `WEIXIN_IOS_XCODE_ORG_ID` | Apple Developer Team ID |
+| `WEIXIN_IOS_XCODE_SIGNING_ID` | 签名证书名，默认 `Apple Development` |
+| `WEIXIN_IOS_UPDATED_WDA_BUNDLE_ID` | 给 `WebDriverAgentRunner` 使用你账号下唯一的 bundle id |
+| `WEIXIN_IOS_ALLOW_PROVISIONING_DEVICE_REGISTRATION` | 是否允许自动注册设备和创建 profile |
+| `WEIXIN_IOS_CLEAR_DINGTALK_AFTER_CLOCK_IN` | 仅 iPhone，优先级高于共享变量 |
+| `WEIXIN_IOS_QQ_FARM_QUERY` | iPhone 侧修改 QQ 农场搜索词 |
+
+如果你不想使用仓库内置的 iPhone 脚本，也可以覆盖默认命令：
+
+- `WEIXIN_IOS_DINGTALK_CLOCK_IN_COMMAND`
+- `WEIXIN_IOS_QQ_FARM_COMMAND`
+- `WEIXIN_IOS_EXIT_DINGTALK_COMMAND`
+
+执行这些自定义命令时，进程会注入：
+
+- `WEIXIN_CONNECTED_DEVICE_ID`
+- `WEIXIN_CONNECTED_DEVICE_NAME`
+- `WEIXIN_CONNECTED_DEVICE_PLATFORM`
+
+执行打卡命令时还会注入：
+
+- `WEIXIN_CLOCK_IN_SLOT_ID`
+- `WEIXIN_CLOCK_IN_SLOT_LABEL`
+
+如需坐标兜底、画布点击步骤等更细粒度配置，请直接查看 [`scripts/ios/run-action.mjs`](./scripts/ios/run-action.mjs) 顶部的环境变量说明。
+
+## 自定义 Agent / SDK
+
+`packages/sdk` 只暴露一套很小的接口：
+
+- `login()`
+- `start(agent)`
+- `sendProactiveTextMessage()`
+- `Agent` / `ChatRequest` / `ChatResponse` 类型
+
+最简示例：
+
+```ts
 import { start, type Agent } from "weixin-agent-sdk";
 
 const echo: Agent = {
@@ -172,87 +259,57 @@ const echo: Agent = {
 await start(echo);
 ```
 
-### 完整示例（自己管理对话历史）
+如果你要自己维护多轮上下文，只需要按 `conversationId` 保存历史即可。
 
-```typescript
-import { start, type Agent } from "weixin-agent-sdk";
-
-const conversations = new Map<string, string[]>();
-
-const myAgent: Agent = {
-  async chat(req) {
-    const history = conversations.get(req.conversationId) ?? [];
-    history.push(req.text);
-
-    // 调用你的 AI 服务...
-    const reply = await callMyAI(history);
-
-    history.push(reply);
-    conversations.set(req.conversationId, history);
-    return { text: reply };
-  },
-};
-
-await start(myAgent);
-```
-
-### OpenAI 示例
-
-`packages/example-openai/` 是一个完整的 OpenAI Agent 实现，支持多轮对话和图片输入：
+完整的 OpenAI 示例见 [`packages/example-openai`](./packages/example-openai)：
 
 ```bash
-pnpm install
-
-# 启动 bot（每次启动前会重新扫码登录微信）
-OPENAI_API_KEY=sk-xxx pnpm run start -w packages/example-openai
+OPENAI_API_KEY=sk-xxx corepack pnpm --filter example-openai start
 ```
 
-支持的环境变量：
+常用环境变量：
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `OPENAI_API_KEY` | 是 | OpenAI API Key |
-| `OPENAI_BASE_URL` | 否 | 自定义 API 地址（兼容 OpenAI 接口的第三方服务） |
-| `OPENAI_MODEL` | 否 | 模型名称，默认 `gpt-5.4` |
-| `SYSTEM_PROMPT` | 否 | 系统提示词 |
+| 变量 | 说明 |
+| --- | --- |
+| `OPENAI_API_KEY` | OpenAI API Key |
+| `OPENAI_BASE_URL` | 自定义兼容 OpenAI 的接口地址 |
+| `OPENAI_MODEL` | 模型名，默认 `gpt-5.4` |
+| `SYSTEM_PROMPT` | 自定义系统提示词 |
 
-## 支持的消息类型
+## 消息与内置命令
 
-### 接收（微信 → Agent）
+### 支持的消息类型
 
-| 类型 | `media.type` | 说明 |
-|------|-------------|------|
-| 文本 | — | `request.text` 直接拿到文字 |
-| 图片 | `image` | 自动从 CDN 下载解密，`filePath` 指向本地文件 |
-| 语音 | `audio` | SILK 格式自动转 WAV（需安装 `silk-wasm`） |
-| 视频 | `video` | 自动下载解密 |
-| 文件 | `file` | 自动下载解密，保留原始文件名 |
-| 引用消息 | — | 被引用的文本拼入 `request.text`，被引用的媒体作为 `media` 传入 |
-| 语音转文字 | — | 微信侧转写的文字直接作为 `request.text` |
+接收侧支持：
 
-### 发送（Agent → 微信）
+- 文本
+- 图片
+- 语音
+- 视频
+- 文件
+- 引用消息
+- 微信语音转文字
 
-| 类型 | 用法 |
-|------|------|
-| 文本 | 返回 `{ text: "..." }` |
-| 图片 | 返回 `{ media: { type: "image", url: "/path/to/img.png" } }` |
-| 视频 | 返回 `{ media: { type: "video", url: "/path/to/video.mp4" } }` |
-| 文件 | 返回 `{ media: { type: "file", url: "/path/to/doc.pdf" } }` |
-| 文本 + 媒体 | `text` 和 `media` 同时返回，文本作为附带说明发送 |
-| 远程图片 | `url` 填 HTTPS 链接，SDK 自动下载后上传到微信 CDN |
+发送侧支持：
 
-## 内置斜杠命令
+- 文本
+- 图片
+- 视频
+- 文件
+- 文本 + 媒体组合回复
 
-在微信中发送以下命令：
+语音消息会优先转成 `WAV`；如果本机没有可用的 `silk-wasm`，则回退保存原始 `SILK` 文件。
 
-- `/echo <消息>` —— 直接回复（不经过 Agent），附带通道耗时统计
-- `/toggle-debug` —— 开关 debug 模式，启用后每条回复追加全链路耗时
+### 内置斜杠命令
 
-## 技术细节
+微信里可直接发送：
 
-- 使用 **长轮询** (`getUpdates`) 接收消息，无需公网服务器
-- 媒体文件通过微信 CDN 中转，**AES-128-ECB** 加密传输
-- 单账号模式：每次 `login` 或 `start` 内触发的扫码登录都会覆盖之前的账号
-- 断点续传：`get_updates_buf` 持久化到 `~/.openclaw/`，重启后从上次位置继续
-- 会话过期自动重连（errcode -14 触发 1 小时冷却后恢复）
-- Node.js >= 22
+- `/echo <消息>`：不经过 Agent，直接回显并附带耗时统计
+- `/toggle-debug`：开关 debug 模式，启用后每条回复追加全链路耗时
+
+## 运行说明
+
+- 使用长轮询接收消息，不需要公网服务器。
+- 单账号模式：新的扫码登录会覆盖上一次账号状态。
+- 运行状态和断点信息保存在 `~/.openclaw/` 下。
+- 会话过期后会自动尝试恢复。
