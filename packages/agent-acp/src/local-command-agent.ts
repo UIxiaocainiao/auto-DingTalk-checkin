@@ -10,6 +10,7 @@ import type { Agent, ChatRequest, ChatResponse } from "weixin-agent-sdk";
 import { CLOCK_IN_SLOTS, resolveActiveClockInSlot, type ClockInSlotConfig, type ClockInSlotId } from "./clock-in-config.js";
 
 const DINGTALK_PACKAGE = "com.alibaba.android.rimet";
+const WECHAT_PACKAGE = "com.tencent.mm";
 const DINGTALK_WORKBENCH_URI =
   process.env.WEIXIN_DINGTALK_WORKBENCH_URI ?? "dingtalk://dingtalkclient/org_microapp_list.html";
 const DINGTALK_ATTENDANCE_ENTRY_TEXTS = (
@@ -28,11 +29,35 @@ const PUNCH_BUTTON_DETECTION_ATTEMPTS = Number.parseInt(process.env.WEIXIN_DINGT
 const PUNCH_BUTTON_RETRY_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_PUNCH_BUTTON_RETRY_DELAY_MS ?? "1200", 10);
 const FAST_CLOCK_SETUP_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_FAST_CLOCK_SETUP_DELAY_MS ?? "1200", 10);
 const FAST_CLOCK_PAGE_LOAD_DELAY_MS = Number.parseInt(process.env.WEIXIN_DINGTALK_FAST_CLOCK_PAGE_LOAD_DELAY_MS ?? "3000", 10);
+const WECHAT_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_OPEN_DELAY_MS ?? "3000", 10);
+const WECHAT_SEARCH_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_SEARCH_DELAY_MS ?? "800", 10);
+const WECHAT_SEARCH_RESULTS_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_SEARCH_RESULTS_DELAY_MS ?? "2500", 10);
+const WECHAT_APPBRAND_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_APPBRAND_OPEN_DELAY_MS ?? "4000", 10);
+const WECHAT_QQ_FARM_QUERY_PREFIX = process.env.WEIXIN_QQ_FARM_QUERY_PREFIX?.trim() || "QQ";
+const WECHAT_QQ_FARM_PINYIN_QUERY = process.env.WEIXIN_QQ_FARM_PINYIN_QUERY?.trim() || "jingdiannongchang";
 const LOCAL_COMMAND_STATE_FILE = path.join(homedir(), ".openclaw", "weixin-agent-sdk", "local-command-state.json");
 const FAST_CLOCK_SETTINGS_TAB_POINT = { xRatio: 0.833, yRatio: 0.965 };
 const FAST_CLOCK_ENTRY_POINT = { xRatio: 0.5, yRatio: 0.21 };
 const FAST_CLOCK_MORNING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.547 };
 const FAST_CLOCK_EVENING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.698 };
+const WECHAT_SEARCH_ICON_POINT = { xRatio: 0.225722, yRatio: 0.04626 };
+const WECHAT_SEARCH_INPUT_POINT = { xRatio: 0.4101, yRatio: 0.03297 };
+const WECHAT_KEYBOARD_LANG_TOGGLE_POINT = { xRatio: 0.91207, yRatio: 0.95817 };
+const WECHAT_QQ_FARM_QUERY_SUGGESTION_POINT = { xRatio: 0.42979, yRatio: 0.39862 };
+const WECHAT_QQ_FARM_FORWARD_BUTTON_POINT = { xRatio: 0.74803, yRatio: 0.58071 };
+const WECHAT_QQ_FARM_QUICK_ENTRY_POINT = { xRatio: 0.03937, yRatio: 0.42077 };
+const WECHAT_QQ_FARM_QUICK_ENTRY_GOLD_POINT = { xRatio: 0.03937, yRatio: 0.42077 };
+const WECHAT_QQ_FARM_QUICK_ENTRY_BLUE_POINT = { xRatio: 0.03051, yRatio: 0.38927 };
+const WECHAT_QQ_FARM_QUICK_ENTRY_SKY_POINT = { xRatio: 0.03937, yRatio: 0.45226 };
+const QQ_FARM_POPUP_CLOSE_POINT = { xRatio: 0.68504, yRatio: 0.10236 };
+const QQ_FARM_POPUP_EMPTY_DISMISS_POINT = { xRatio: 0.82021, yRatio: 0.81102 };
+const QQ_FARM_ONE_KEY_HARVEST_POINT = { xRatio: 0.49934, yRatio: 0.74606 };
+const QQ_FARM_FRIEND_ENTRY_POINT = { xRatio: 0.96457, yRatio: 0.94094 };
+const QQ_FARM_FRIEND_FIRST_VISIT_POINT = { xRatio: 0.63386, yRatio: 0.30955 };
+const QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT = { xRatio: 0.49705, yRatio: 0.73819 };
+const QQ_FARM_STEAL_RUN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_STEAL_RUN_DELAY_MS ?? "4000", 10);
+const QQ_FARM_POST_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_POST_OPEN_DELAY_MS ?? "2500", 10);
+const QQ_FARM_FRIEND_PAGE_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_FRIEND_PAGE_DELAY_MS ?? "2500", 10);
 
 type CommandResult = {
   stdout: string;
@@ -502,6 +527,35 @@ function isBlueSwitchEnabledInScreenshot(
   return sampled > 0 && bluePixels / sampled >= 0.18;
 }
 
+function readPixelAtRatio(
+  pngBuffer: Buffer,
+  point: { xRatio: number; yRatio: number },
+): { r: number; g: number; b: number; a: number } {
+  const png = PNG.sync.read(pngBuffer);
+  const { width, height, data } = png;
+  const center = pointFromRatio(width, height, point);
+  const x = Math.max(0, Math.min(width - 1, center.x));
+  const y = Math.max(0, Math.min(height - 1, center.y));
+  const index = (y * width + x) * 4;
+  return {
+    r: data[index],
+    g: data[index + 1],
+    b: data[index + 2],
+    a: data[index + 3],
+  };
+}
+
+function isQqFarmQuickEntryVisible(pngBuffer: Buffer): boolean {
+  const gold = readPixelAtRatio(pngBuffer, WECHAT_QQ_FARM_QUICK_ENTRY_GOLD_POINT);
+  const blue = readPixelAtRatio(pngBuffer, WECHAT_QQ_FARM_QUICK_ENTRY_BLUE_POINT);
+  const sky = readPixelAtRatio(pngBuffer, WECHAT_QQ_FARM_QUICK_ENTRY_SKY_POINT);
+
+  const looksLikeGold = gold.r >= 220 && gold.g >= 180 && gold.b <= 150;
+  const looksLikeBlue = blue.b >= 180 && blue.g >= 180 && blue.r <= 230;
+  const looksLikeSky = sky.b >= 220 && sky.g >= 220 && sky.r <= 240;
+  return looksLikeGold && looksLikeBlue && looksLikeSky;
+}
+
 async function dumpUi(deviceId: string): Promise<string> {
   await adb(deviceId, ["shell", "uiautomator", "dump", UI_DUMP_PATH]);
   const result = await adb(deviceId, ["shell", "cat", UI_DUMP_PATH]);
@@ -545,15 +599,15 @@ async function swipe(deviceId: string, from: { x: number; y: number }, to: { x: 
   ]);
 }
 
-async function openDingTalkApp(deviceId: string): Promise<void> {
-  log(`opening DingTalk app: ${DINGTALK_PACKAGE}`);
+async function openPackageApp(deviceId: string, packageName: string, appLabel: string): Promise<void> {
+  log(`opening ${appLabel} app: ${packageName}`);
   const resolved = await adb(deviceId, [
     "shell",
     "cmd",
     "package",
     "resolve-activity",
     "--brief",
-    DINGTALK_PACKAGE,
+    packageName,
   ], { allowNonZero: true });
   const activity = resolved.stdout
     .split("\n")
@@ -569,11 +623,19 @@ async function openDingTalkApp(deviceId: string): Promise<void> {
     "shell",
     "monkey",
     "-p",
-    DINGTALK_PACKAGE,
+    packageName,
     "-c",
     "android.intent.category.LAUNCHER",
     "1",
   ]);
+}
+
+async function openDingTalkApp(deviceId: string): Promise<void> {
+  await openPackageApp(deviceId, DINGTALK_PACKAGE, "DingTalk");
+}
+
+async function openWeChatApp(deviceId: string): Promise<void> {
+  await openPackageApp(deviceId, WECHAT_PACKAGE, "WeChat");
 }
 
 async function openWorkbenchPage(deviceId: string): Promise<void> {
@@ -735,6 +797,210 @@ async function clearRecentApps(deviceId: string): Promise<{ cleared: boolean }> 
   return { cleared: true };
 }
 
+async function readTopResumedActivity(deviceId: string): Promise<string | undefined> {
+  const result = await adb(deviceId, ["shell", "dumpsys", "activity", "activities"]);
+  const line = result.stdout
+    .split("\n")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith("topResumedActivity="));
+
+  const match = line?.match(/u\d+\s+([^ ]+)\s+t\d+\}/);
+  return match?.[1];
+}
+
+async function waitForTopResumedActivity(
+  deviceId: string,
+  matcher: (activity: string | undefined) => boolean,
+  attempts = 8,
+): Promise<string | undefined> {
+  let lastActivity: string | undefined;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    lastActivity = await readTopResumedActivity(deviceId);
+    if (matcher(lastActivity)) {
+      return lastActivity;
+    }
+    await sleep(800);
+  }
+  return lastActivity;
+}
+
+async function waitForWeChatAppBrand(deviceId: string): Promise<string | undefined> {
+  return await waitForTopResumedActivity(
+    deviceId,
+    (activity) => activity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`) ?? false,
+  );
+}
+
+async function waitForWeChatSearchResultsPage(deviceId: string): Promise<string | undefined> {
+  return await waitForTopResumedActivity(
+    deviceId,
+    (activity) => activity?.includes(`${WECHAT_PACKAGE}/.plugin.webview.ui.tools.fts.MMFTSSOSHomeWebViewUI`) ?? false,
+    6,
+  );
+}
+
+async function tryOpenQqFarmQuickEntry(deviceId: string): Promise<boolean> {
+  const screenshot = await captureScreen(deviceId);
+  if (!isQqFarmQuickEntryVisible(screenshot)) {
+    return false;
+  }
+
+  const png = PNG.sync.read(screenshot);
+  const quickEntryCenter = pointFromRatio(
+    png.width,
+    png.height,
+    WECHAT_QQ_FARM_QUICK_ENTRY_POINT,
+  );
+  log("opening QQ classic farm mini program from WeChat quick-entry grid");
+  await tap(deviceId, quickEntryCenter.x, quickEntryCenter.y);
+  const topActivity = await waitForWeChatAppBrand(deviceId);
+  return Boolean(topActivity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`));
+}
+
+async function focusWeChatSearchField(deviceId: string): Promise<void> {
+  const wechatHomeScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const searchIconCenter = pointFromRatio(
+    wechatHomeScreenshot.width,
+    wechatHomeScreenshot.height,
+    WECHAT_SEARCH_ICON_POINT,
+  );
+  log("opening WeChat search");
+  await tap(deviceId, searchIconCenter.x, searchIconCenter.y);
+  await sleep(WECHAT_SEARCH_DELAY_MS);
+
+  // Search focus is flaky on this tablet build, so tap the input itself once.
+  const searchScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const searchInputCenter = pointFromRatio(
+    searchScreenshot.width,
+    searchScreenshot.height,
+    WECHAT_SEARCH_INPUT_POINT,
+  );
+  log("focusing WeChat search input");
+  await tap(deviceId, searchInputCenter.x, searchInputCenter.y);
+  await sleep(WECHAT_SEARCH_DELAY_MS);
+}
+
+async function tapCurrentScreenPoint(
+  deviceId: string,
+  point: { xRatio: number; yRatio: number },
+  description: string,
+): Promise<void> {
+  const screenshot = PNG.sync.read(await captureScreen(deviceId));
+  const center = pointFromRatio(screenshot.width, screenshot.height, point);
+  log(description);
+  await tap(deviceId, center.x, center.y);
+}
+
+async function openQqFarmFromWeChatSearch(deviceId: string): Promise<void> {
+  await focusWeChatSearchField(deviceId);
+
+  log(`typing WeChat search prefix: ${WECHAT_QQ_FARM_QUERY_PREFIX}`);
+  await adb(deviceId, ["shell", "input", "text", WECHAT_QQ_FARM_QUERY_PREFIX]);
+  await sleep(WECHAT_SEARCH_DELAY_MS);
+
+  const prefixScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const searchInputCenter = pointFromRatio(
+    prefixScreenshot.width,
+    prefixScreenshot.height,
+    WECHAT_SEARCH_INPUT_POINT,
+  );
+  await tap(deviceId, searchInputCenter.x, searchInputCenter.y);
+  await sleep(300);
+
+  const langToggleCenter = pointFromRatio(
+    prefixScreenshot.width,
+    prefixScreenshot.height,
+    WECHAT_KEYBOARD_LANG_TOGGLE_POINT,
+  );
+  log("switching WeChat keyboard to Chinese mode");
+  await tap(deviceId, langToggleCenter.x, langToggleCenter.y);
+  await sleep(300);
+
+  log(`typing WeChat search pinyin: ${WECHAT_QQ_FARM_PINYIN_QUERY}`);
+  await adb(deviceId, ["shell", "input", "text", WECHAT_QQ_FARM_PINYIN_QUERY]);
+  await sleep(WECHAT_SEARCH_RESULTS_DELAY_MS);
+
+  const suggestionScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const suggestionCenter = pointFromRatio(
+    suggestionScreenshot.width,
+    suggestionScreenshot.height,
+    WECHAT_QQ_FARM_QUERY_SUGGESTION_POINT,
+  );
+  log("choosing QQ classic farm search suggestion");
+  await tap(deviceId, suggestionCenter.x, suggestionCenter.y);
+  await sleep(WECHAT_SEARCH_RESULTS_DELAY_MS);
+
+  const searchResultsActivity = await waitForWeChatSearchResultsPage(deviceId);
+  if (!searchResultsActivity?.includes(`${WECHAT_PACKAGE}/.plugin.webview.ui.tools.fts.MMFTSSOSHomeWebViewUI`)) {
+    throw new Error(`未能进入 QQ经典农场 搜索结果页，当前前台 Activity: ${searchResultsActivity ?? "unknown"}`);
+  }
+
+  const resultsScreenshot = PNG.sync.read(await captureScreen(deviceId));
+  const forwardButtonCenter = pointFromRatio(
+    resultsScreenshot.width,
+    resultsScreenshot.height,
+    WECHAT_QQ_FARM_FORWARD_BUTTON_POINT,
+  );
+  log("opening QQ classic farm mini program via search result forward button");
+  await tap(deviceId, forwardButtonCenter.x, forwardButtonCenter.y);
+  await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+
+  const topActivity = await waitForWeChatAppBrand(deviceId);
+  if (!topActivity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`)) {
+    throw new Error(`未能进入 QQ经典农场 小程序，当前前台 Activity: ${topActivity ?? "unknown"}`);
+  }
+}
+
+async function dismissQqFarmTransientPopups(deviceId: string): Promise<void> {
+  // These taps are intentionally tolerant: on the normal farm canvas they land on empty sky/ground,
+  // while on welcome/level-up overlays they close the dialog and let the flow continue.
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_POPUP_CLOSE_POINT, "closing QQ farm popup if present");
+  await sleep(800);
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_POPUP_EMPTY_DISMISS_POINT, "dismissing QQ farm overlay if present");
+  await sleep(800);
+}
+
+async function runQqFarmRoutine(deviceId: string): Promise<void> {
+  await sleep(QQ_FARM_POST_OPEN_DELAY_MS);
+  await dismissQqFarmTransientPopups(deviceId);
+
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_ONE_KEY_HARVEST_POINT, "running QQ farm one-key harvest");
+  await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+  await dismissQqFarmTransientPopups(deviceId);
+
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_ENTRY_POINT, "opening QQ farm friend list");
+  await sleep(QQ_FARM_FRIEND_PAGE_DELAY_MS);
+
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_FIRST_VISIT_POINT, "visiting first QQ farm friend");
+  await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+
+  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT, "running QQ farm one-key steal");
+  await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+}
+
+async function openQqFarmMiniProgram(deviceId: string): Promise<void> {
+  await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_HOME"]);
+  await sleep(800);
+  await adb(deviceId, ["shell", "am", "force-stop", WECHAT_PACKAGE]);
+  await sleep(800);
+  await openWeChatApp(deviceId);
+  await sleep(WECHAT_OPEN_DELAY_MS);
+
+  try {
+    await openQqFarmFromWeChatSearch(deviceId);
+    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`QQ farm search flow failed, falling back to quick entry: ${message}`);
+  }
+
+  if (await tryOpenQqFarmQuickEntry(deviceId)) {
+    return;
+  }
+
+  throw new Error("未能通过微信搜索或快捷入口打开 QQ经典农场 小程序");
+}
+
 export async function runAttendanceCommand(opts?: {
   headless?: boolean;
   enforceTimeWindow?: boolean;
@@ -770,6 +1036,15 @@ export async function runAttendanceCommand(opts?: {
   };
 }
 
+export async function runQqFarmCommand(): Promise<ChatResponse> {
+  const deviceId = await resolveDeviceId();
+  await openQqFarmMiniProgram(deviceId);
+  await runQqFarmRoutine(deviceId);
+  return {
+    text: "已进入 QQ经典农场，并执行弹框处理、收菜与好友偷菜流程。",
+  };
+}
+
 async function handleExitDingTalkCommand(): Promise<ChatResponse> {
   const deviceId = await resolveDeviceId();
   await exitDingTalk(deviceId);
@@ -785,6 +1060,9 @@ export class LocalCommandAgent implements Agent {
       return await runAttendanceCommand({
         enforceTimeWindow: false,
       });
+    }
+    if (text === "偷菜") {
+      return await runQqFarmCommand();
     }
     if (text === "退出钉钉") {
       return await handleExitDingTalkCommand();

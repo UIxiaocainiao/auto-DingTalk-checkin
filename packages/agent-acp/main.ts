@@ -16,6 +16,7 @@ import { login, start } from "weixin-agent-sdk";
 
 import { AcpAgent } from "./src/acp-agent.js";
 import { startAutoClockInScheduler } from "./src/auto-clock-in.js";
+import { startAutoQqFarmScheduler } from "./src/auto-qq-farm.js";
 import { startDailyCryptoBriefingScheduler } from "./src/daily-crypto-briefing.js";
 import { startDailyMotivationScheduler } from "./src/daily-motivation.js";
 import { LocalCommandAgent } from "./src/local-command-agent.js";
@@ -129,6 +130,10 @@ async function main() {
         abortSignal: ac.signal,
         log: console.log,
       });
+      const autoQqFarm = startAutoQqFarmScheduler({
+        abortSignal: ac.signal,
+        log: console.log,
+      });
       const dailyMotivation = startDailyMotivationScheduler({
         abortSignal: ac.signal,
         log: console.log,
@@ -143,6 +148,7 @@ async function main() {
         console.log("\n正在停止...");
         baseAgent.dispose();
         autoClockIn?.stop();
+        autoQqFarm?.stop();
         dailyMotivation?.stop();
         dailyCryptoBriefing?.stop();
         ac.abort();
@@ -150,6 +156,7 @@ async function main() {
       process.on("SIGTERM", () => {
         baseAgent.dispose();
         autoClockIn?.stop();
+        autoQqFarm?.stop();
         dailyMotivation?.stop();
         dailyCryptoBriefing?.stop();
         ac.abort();
