@@ -9,6 +9,58 @@ import { PNG } from "pngjs";
 import type { Agent, ChatRequest, ChatResponse } from "weixin-agent-sdk";
 
 import { CLOCK_IN_SLOTS, resolveActiveClockInSlot, type ClockInSlotConfig, type ClockInSlotId } from "./clock-in-config.js";
+import { findOcrTextBlock, recognizeTextBlocks } from "./ocr-fallback.js";
+import {
+  QQ_FARM_FRIEND_ENTRY_TEXTS,
+  QQ_FARM_FRIEND_VISIT_TEXTS,
+  QQ_FARM_OPEN_TEXTS,
+  QQ_FARM_PRIMARY_ACTION_TEXTS,
+  QQ_FARM_RETURN_HOME_TEXTS,
+  buildQqFarmQueryCandidates,
+  buildQqFarmResultTexts,
+  detectQqFarmScene,
+  type QqFarmSceneId,
+} from "./qq-farm-shared.js";
+
+type PointRatio = {
+  xRatio: number;
+  yRatio: number;
+};
+
+function parsePointRatio(raw: string | undefined, envName: string): PointRatio | undefined {
+  if (!raw?.trim()) {
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${envName} 需要是 JSON，例如 {"xRatio":0.5,"yRatio":0.5}`);
+  }
+
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as { xRatio?: unknown }).xRatio !== "number" ||
+    typeof (parsed as { yRatio?: unknown }).yRatio !== "number"
+  ) {
+    throw new Error(`${envName} 需要包含数字字段 xRatio 和 yRatio`);
+  }
+
+  return {
+    xRatio: (parsed as { xRatio: number }).xRatio,
+    yRatio: (parsed as { yRatio: number }).yRatio,
+  };
+}
+
+function resolvePointRatioEnv(envName: string, fallback: PointRatio): PointRatio {
+  return parsePointRatio(process.env[envName], envName) ?? fallback;
+}
+
+function resolveOptionalPointRatioEnv(envName: string): PointRatio | undefined {
+  return parsePointRatio(process.env[envName], envName);
+}
 
 const DINGTALK_PACKAGE = "com.alibaba.android.rimet";
 const WECHAT_PACKAGE = "com.tencent.mm";
@@ -34,28 +86,38 @@ const WECHAT_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_OPEN_DELA
 const WECHAT_SEARCH_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_SEARCH_DELAY_MS ?? "800", 10);
 const WECHAT_SEARCH_RESULTS_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_SEARCH_RESULTS_DELAY_MS ?? "2500", 10);
 const WECHAT_APPBRAND_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_WECHAT_APPBRAND_OPEN_DELAY_MS ?? "4000", 10);
+const QQ_FARM_QUERY = process.env.WEIXIN_QQ_FARM_QUERY?.trim() || "QQ经典农场";
+const QQ_FARM_QUERY_CANDIDATES = buildQqFarmQueryCandidates(QQ_FARM_QUERY);
+const QQ_FARM_RESULT_TEXTS = buildQqFarmResultTexts(QQ_FARM_QUERY);
 const WECHAT_QQ_FARM_QUERY_PREFIX = process.env.WEIXIN_QQ_FARM_QUERY_PREFIX?.trim() || "QQ";
 const WECHAT_QQ_FARM_PINYIN_QUERY = process.env.WEIXIN_QQ_FARM_PINYIN_QUERY?.trim() || "jingdiannongchang";
 const LOCAL_COMMAND_STATE_FILE = path.join(homedir(), ".openclaw", "weixin-agent-sdk", "local-command-state.json");
-const FAST_CLOCK_SETTINGS_TAB_POINT = { xRatio: 0.833, yRatio: 0.965 };
-const FAST_CLOCK_ENTRY_POINT = { xRatio: 0.5, yRatio: 0.21 };
-const FAST_CLOCK_MORNING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.547 };
-const FAST_CLOCK_EVENING_SWITCH_POINT = { xRatio: 0.93, yRatio: 0.698 };
-const WECHAT_SEARCH_ICON_POINT = { xRatio: 0.225722, yRatio: 0.04626 };
-const WECHAT_SEARCH_INPUT_POINT = { xRatio: 0.4101, yRatio: 0.03297 };
-const WECHAT_KEYBOARD_LANG_TOGGLE_POINT = { xRatio: 0.91207, yRatio: 0.95817 };
-const WECHAT_QQ_FARM_QUERY_SUGGESTION_POINT = { xRatio: 0.42979, yRatio: 0.39862 };
-const WECHAT_QQ_FARM_FORWARD_BUTTON_POINT = { xRatio: 0.74803, yRatio: 0.58071 };
-const WECHAT_QQ_FARM_QUICK_ENTRY_POINT = { xRatio: 0.03937, yRatio: 0.42077 };
+const FAST_CLOCK_SETTINGS_TAB_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_DINGTALK_FAST_CLOCK_SETTINGS_TAB_COORD", { xRatio: 0.833, yRatio: 0.965 });
+const FAST_CLOCK_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_DINGTALK_FAST_CLOCK_ENTRY_COORD", { xRatio: 0.5, yRatio: 0.21 });
+const FAST_CLOCK_MORNING_SWITCH_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_DINGTALK_FAST_CLOCK_MORNING_SWITCH_COORD", { xRatio: 0.93, yRatio: 0.547 });
+const FAST_CLOCK_EVENING_SWITCH_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_DINGTALK_FAST_CLOCK_EVENING_SWITCH_COORD", { xRatio: 0.93, yRatio: 0.698 });
+const ANDROID_DINGTALK_ATTENDANCE_ENTRY_POINT = resolveOptionalPointRatioEnv("WEIXIN_ANDROID_DINGTALK_ATTENDANCE_ENTRY_COORD");
+const ANDROID_DINGTALK_MORNING_PUNCH_POINT = resolveOptionalPointRatioEnv("WEIXIN_ANDROID_DINGTALK_MORNING_PUNCH_COORD");
+const ANDROID_DINGTALK_EVENING_PUNCH_POINT = resolveOptionalPointRatioEnv("WEIXIN_ANDROID_DINGTALK_EVENING_PUNCH_COORD");
+const ANDROID_DINGTALK_GENERIC_PUNCH_POINT = resolveOptionalPointRatioEnv("WEIXIN_ANDROID_DINGTALK_GENERIC_PUNCH_COORD");
+const WECHAT_SEARCH_ICON_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_WECHAT_SEARCH_ICON_COORD", { xRatio: 0.225722, yRatio: 0.04626 });
+const WECHAT_SEARCH_INPUT_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_WECHAT_SEARCH_INPUT_COORD", { xRatio: 0.4101, yRatio: 0.03297 });
+const WECHAT_KEYBOARD_LANG_TOGGLE_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_WECHAT_KEYBOARD_LANG_TOGGLE_COORD", { xRatio: 0.91207, yRatio: 0.95817 });
+const WECHAT_QQ_FARM_QUERY_SUGGESTION_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_QUERY_SUGGESTION_COORD", { xRatio: 0.42979, yRatio: 0.39862 });
+const WECHAT_QQ_FARM_FORWARD_BUTTON_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FORWARD_COORD", { xRatio: 0.74803, yRatio: 0.58071 });
+const WECHAT_QQ_FARM_RESULT_ROW_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_RESULT_ROW_COORD", { xRatio: 0.254, yRatio: 0.579 });
+const WECHAT_QQ_FARM_RESULT_ICON_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_RESULT_ICON_COORD", { xRatio: 0.094, yRatio: 0.579 });
+const WECHAT_QQ_FARM_RESULT_BANNER_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_RESULT_BANNER_COORD", { xRatio: 0.446, yRatio: 0.406 });
+const WECHAT_QQ_FARM_QUICK_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_QUICK_ENTRY_COORD", { xRatio: 0.03937, yRatio: 0.42077 });
 const WECHAT_QQ_FARM_QUICK_ENTRY_GOLD_POINT = { xRatio: 0.03937, yRatio: 0.42077 };
 const WECHAT_QQ_FARM_QUICK_ENTRY_BLUE_POINT = { xRatio: 0.03051, yRatio: 0.38927 };
 const WECHAT_QQ_FARM_QUICK_ENTRY_SKY_POINT = { xRatio: 0.03937, yRatio: 0.45226 };
-const QQ_FARM_POPUP_CLOSE_POINT = { xRatio: 0.68504, yRatio: 0.10236 };
-const QQ_FARM_POPUP_EMPTY_DISMISS_POINT = { xRatio: 0.82021, yRatio: 0.81102 };
-const QQ_FARM_ONE_KEY_HARVEST_POINT = { xRatio: 0.49934, yRatio: 0.74606 };
-const QQ_FARM_FRIEND_ENTRY_POINT = { xRatio: 0.96457, yRatio: 0.94094 };
-const QQ_FARM_FRIEND_FIRST_VISIT_POINT = { xRatio: 0.63386, yRatio: 0.30955 };
-const QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT = { xRatio: 0.49705, yRatio: 0.73819 };
+const QQ_FARM_POPUP_CLOSE_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_POPUP_CLOSE_COORD", { xRatio: 0.68504, yRatio: 0.10236 });
+const QQ_FARM_POPUP_EMPTY_DISMISS_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_POPUP_EMPTY_DISMISS_COORD", { xRatio: 0.82021, yRatio: 0.81102 });
+const QQ_FARM_ONE_KEY_HARVEST_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_ONE_KEY_HARVEST_COORD", { xRatio: 0.49934, yRatio: 0.74606 });
+const QQ_FARM_FRIEND_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_ENTRY_COORD", { xRatio: 0.96457, yRatio: 0.94094 });
+const QQ_FARM_FRIEND_FIRST_VISIT_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_FIRST_VISIT_COORD", { xRatio: 0.63386, yRatio: 0.30955 });
+const QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_ONE_KEY_STEAL_COORD", { xRatio: 0.49705, yRatio: 0.73819 });
 const QQ_FARM_STEAL_RUN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_STEAL_RUN_DELAY_MS ?? "4000", 10);
 const QQ_FARM_POST_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_POST_OPEN_DELAY_MS ?? "2500", 10);
 const QQ_FARM_FRIEND_PAGE_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_FRIEND_PAGE_DELAY_MS ?? "2500", 10);
@@ -947,6 +1009,16 @@ function pointFromRatio(width: number, height: number, point: { xRatio: number; 
   };
 }
 
+function resolveAndroidPunchPoint(slotId: ClockInSlotId | undefined): PointRatio | undefined {
+  if (slotId === "morning") {
+    return ANDROID_DINGTALK_MORNING_PUNCH_POINT ?? ANDROID_DINGTALK_GENERIC_PUNCH_POINT;
+  }
+  if (slotId === "evening") {
+    return ANDROID_DINGTALK_EVENING_PUNCH_POINT ?? ANDROID_DINGTALK_GENERIC_PUNCH_POINT;
+  }
+  return ANDROID_DINGTALK_GENERIC_PUNCH_POINT;
+}
+
 function isBlueSwitchEnabledInScreenshot(
   pngBuffer: Buffer,
   point: { xRatio: number; yRatio: number },
@@ -1108,6 +1180,19 @@ async function openAttendancePageFromWorkbench(deviceId: string): Promise<void> 
   await sleep(1200);
 
   for (let attempt = 0; attempt < WORKBENCH_SCROLL_ATTEMPTS; attempt += 1) {
+    const openedByOcr = await tryTapTextByOcr(
+      deviceId,
+      DINGTALK_ATTENDANCE_ENTRY_TEXTS,
+      "opening DingTalk attendance entry",
+      {
+        minYRatio: 0.08,
+        maxYRatio: 0.92,
+      },
+    );
+    if (openedByOcr) {
+      return;
+    }
+
     const xml = await dumpUi(deviceId);
     const center = findAttendanceEntryCenter(xml);
     if (center) {
@@ -1116,8 +1201,17 @@ async function openAttendancePageFromWorkbench(deviceId: string): Promise<void> 
       return;
     }
 
+    if (attempt === 0 && ANDROID_DINGTALK_ATTENDANCE_ENTRY_POINT) {
+      await tapCurrentScreenPoint(deviceId, ANDROID_DINGTALK_ATTENDANCE_ENTRY_POINT, "opening DingTalk attendance entry via configured point");
+      return;
+    }
+
     const scrollableArea = findScrollableArea(xml);
     if (!scrollableArea) {
+      if (ANDROID_DINGTALK_ATTENDANCE_ENTRY_POINT) {
+        await tapCurrentScreenPoint(deviceId, ANDROID_DINGTALK_ATTENDANCE_ENTRY_POINT, "opening DingTalk attendance entry via configured point");
+        return;
+      }
       throw new Error("未找到工作台应用列表，无法定位“考勤打卡”");
     }
 
@@ -1137,12 +1231,13 @@ async function openAttendancePageFromWorkbench(deviceId: string): Promise<void> 
   throw new Error(`未在工作台中找到应用：${DINGTALK_ATTENDANCE_ENTRY_TEXTS.join(" / ")}`);
 }
 
-async function clickPunchButton(deviceId: string, slot: ClockInSlotConfig): Promise<void> {
+async function clickPunchButton(deviceId: string, slot?: ClockInSlotConfig): Promise<void> {
+  const slotLabel = slot?.label ?? "当前";
   for (let attempt = 0; attempt < PUNCH_BUTTON_DETECTION_ATTEMPTS; attempt += 1) {
     const screenshot = await captureScreen(deviceId);
     const center = findPunchButtonCenterFromScreenshot(screenshot);
     if (center) {
-      log(`found ${slot.label} punch button via screenshot at (${center.x}, ${center.y})`);
+      log(`found ${slotLabel} punch button via screenshot at (${center.x}, ${center.y})`);
       await tap(deviceId, center.x, center.y);
       return;
     }
@@ -1151,7 +1246,27 @@ async function clickPunchButton(deviceId: string, slot: ClockInSlotConfig): Prom
       await sleep(PUNCH_BUTTON_RETRY_DELAY_MS);
     }
   }
-  throw new Error(`已进入“考勤打卡”页面，但未识别到${slot.label}打卡按钮`);
+
+  const tappedByOcr = await tryTapTextByOcr(
+    deviceId,
+    buildPunchTextCandidates(slot),
+    `tapping ${slotLabel} punch button`,
+    {
+      minYRatio: 0.35,
+      maxYRatio: 0.95,
+    },
+  );
+  if (tappedByOcr) {
+    return;
+  }
+
+  const configuredPoint = resolveAndroidPunchPoint(slot?.id);
+  if (configuredPoint) {
+    await tapCurrentScreenPoint(deviceId, configuredPoint, `tapping configured ${slotLabel} punch point`);
+    return;
+  }
+
+  throw new Error(`已进入“考勤打卡”页面，但未识别到${slotLabel}打卡按钮`);
 }
 
 async function openFastClockSettingsPage(deviceId: string): Promise<void> {
@@ -1332,13 +1447,300 @@ async function focusWeChatSearchField(deviceId: string): Promise<void> {
 
 async function tapCurrentScreenPoint(
   deviceId: string,
-  point: { xRatio: number; yRatio: number },
+  point: PointRatio,
   description: string,
 ): Promise<void> {
   const screenshot = PNG.sync.read(await captureScreen(deviceId));
   const center = pointFromRatio(screenshot.width, screenshot.height, point);
   log(description);
   await tap(deviceId, center.x, center.y);
+}
+
+function findGreenButtonCentersFromPng(png: PNG): Array<{
+  pixelCount: number;
+  centerX: number;
+  centerY: number;
+}> {
+  const { width, height, data } = png;
+  const visited = new Uint8Array(width * height);
+  const minX = Math.floor(width * 0.55);
+  const maxX = Math.floor(width * 0.98);
+  const minY = Math.floor(height * 0.35);
+  const maxY = Math.floor(height * 0.9);
+  const minWidth = Math.floor(width * 0.08);
+  const minHeight = Math.floor(height * 0.025);
+  const centers: Array<{
+    pixelCount: number;
+    centerX: number;
+    centerY: number;
+  }> = [];
+
+  const isCandidate = (x: number, y: number): boolean => {
+    if (x < minX || x > maxX || y < minY || y > maxY) {
+      return false;
+    }
+
+    const offset = (y * width + x) * 4;
+    const r = data[offset];
+    const g = data[offset + 1];
+    const b = data[offset + 2];
+    const a = data[offset + 3];
+    return a > 200 && g > 170 && r > 120 && r < 240 && b < 140 && g - r > 8;
+  };
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const start = y * width + x;
+      if (visited[start] || !isCandidate(x, y)) {
+        continue;
+      }
+
+      const queue: Array<[number, number]> = [[x, y]];
+      visited[start] = 1;
+      let minComponentX = x;
+      let maxComponentX = x;
+      let minComponentY = y;
+      let maxComponentY = y;
+      let pixelCount = 0;
+
+      while (queue.length > 0) {
+        const [currentX, currentY] = queue.pop() as [number, number];
+        pixelCount += 1;
+        if (currentX < minComponentX) minComponentX = currentX;
+        if (currentX > maxComponentX) maxComponentX = currentX;
+        if (currentY < minComponentY) minComponentY = currentY;
+        if (currentY > maxComponentY) maxComponentY = currentY;
+
+        for (const [nextX, nextY] of [
+          [currentX - 1, currentY],
+          [currentX + 1, currentY],
+          [currentX, currentY - 1],
+          [currentX, currentY + 1],
+        ] as const) {
+          if (nextX < minX || nextX > maxX || nextY < minY || nextY > maxY) {
+            continue;
+          }
+          const nextIndex = nextY * width + nextX;
+          if (visited[nextIndex] || !isCandidate(nextX, nextY)) {
+            continue;
+          }
+          visited[nextIndex] = 1;
+          queue.push([nextX, nextY]);
+        }
+      }
+
+      const componentWidth = maxComponentX - minComponentX + 1;
+      const componentHeight = maxComponentY - minComponentY + 1;
+      if (pixelCount < 500 || componentWidth < minWidth || componentHeight < minHeight) {
+        continue;
+      }
+
+      centers.push({
+        pixelCount,
+        centerX: Math.round((minComponentX + maxComponentX) / 2),
+        centerY: Math.round((minComponentY + maxComponentY) / 2),
+      });
+    }
+  }
+
+  centers.sort((left, right) => left.centerY - right.centerY || left.centerX - right.centerX);
+  return centers;
+}
+
+async function detectAndroidFriendVisitButtons(deviceId: string): Promise<Array<{ x: number; y: number; pixelCount: number }>> {
+  const png = PNG.sync.read(await captureScreen(deviceId));
+  return findGreenButtonCentersFromPng(png).map((center) => ({
+    pixelCount: center.pixelCount,
+    x: center.centerX,
+    y: center.centerY,
+  }));
+}
+
+async function tryTapTextByOcr(
+  deviceId: string,
+  candidates: string[],
+  description: string,
+  opts?: {
+    minXRatio?: number;
+    maxXRatio?: number;
+    minYRatio?: number;
+    maxYRatio?: number;
+  },
+): Promise<boolean> {
+  const screenshot = await captureScreen(deviceId);
+  const png = PNG.sync.read(screenshot);
+  const blocks = await recognizeTextBlocks(screenshot, log);
+  if (blocks.length === 0) {
+    return false;
+  }
+
+  const matched = findOcrTextBlock(blocks, candidates, {
+    minX: typeof opts?.minXRatio === "number" ? png.width * opts.minXRatio : undefined,
+    maxX: typeof opts?.maxXRatio === "number" ? png.width * opts.maxXRatio : undefined,
+    minY: typeof opts?.minYRatio === "number" ? png.height * opts.minYRatio : undefined,
+    maxY: typeof opts?.maxYRatio === "number" ? png.height * opts.maxYRatio : undefined,
+  });
+  if (!matched) {
+    return false;
+  }
+
+  log(`${description} via OCR: ${matched.text}`);
+  await tap(deviceId, matched.centerX, matched.centerY);
+  return true;
+}
+
+function buildPunchTextCandidates(slot?: ClockInSlotConfig): string[] {
+  const slotSpecificTexts =
+    slot?.id === "morning"
+      ? ["上班打卡", "上班", "极速打卡"]
+      : slot?.id === "evening"
+        ? ["下班打卡", "下班", "极速打卡"]
+        : ["打卡", "极速打卡"];
+
+  return [...new Set([...slotSpecificTexts, "打卡", "极速打卡", "签到"])];
+}
+
+async function recognizeQqFarmSceneOnAndroid(deviceId: string): Promise<{
+  scene: QqFarmSceneId;
+  matchedTexts: string[];
+}> {
+  const screenshot = await captureScreen(deviceId);
+  const blocks = await recognizeTextBlocks(screenshot, log);
+  const detection = detectQqFarmScene(blocks);
+  return {
+    scene: detection.scene,
+    matchedTexts: detection.matchedTexts,
+  };
+}
+
+async function waitForQqFarmSceneOnAndroid(
+  deviceId: string,
+  attempts = 8,
+  delayMs = 1_000,
+): Promise<{
+  scene: QqFarmSceneId;
+  matchedTexts: string[];
+}> {
+  let detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (detection.scene !== "unknown") {
+      log(`QQ farm scene detected: ${detection.scene}${detection.matchedTexts.length > 0 ? ` (${detection.matchedTexts.join(", ")})` : ""}`);
+      return detection;
+    }
+    await sleep(delayMs);
+    detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+  }
+  return detection;
+}
+
+async function ensureQqFarmHomeScene(deviceId: string): Promise<QqFarmSceneId> {
+  let detection = await waitForQqFarmSceneOnAndroid(deviceId, 3, 800);
+  if (detection.scene === "home" || detection.scene === "unknown") {
+    return detection.scene;
+  }
+
+  if (detection.scene === "friend-farm") {
+    const returned =
+      (await tryTapTextByOcr(deviceId, QQ_FARM_RETURN_HOME_TEXTS, "returning to QQ farm home", {
+        minXRatio: 0.75,
+        minYRatio: 0.65,
+      })) ||
+      false;
+    if (returned) {
+      await sleep(1_500);
+      detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+      if (detection.scene === "home") {
+        return detection.scene;
+      }
+    }
+  }
+
+  if (detection.scene === "friends" || detection.scene === "store") {
+    await tapCurrentScreenPoint(deviceId, QQ_FARM_POPUP_CLOSE_POINT, `closing QQ farm ${detection.scene} modal`);
+    await sleep(1_200);
+    detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+  }
+
+  return detection.scene;
+}
+
+async function waitForWeChatAppBrandOpen(deviceId: string): Promise<boolean> {
+  const topActivity = await waitForWeChatAppBrand(deviceId);
+  return Boolean(topActivity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`));
+}
+
+async function tryOpenQqFarmByOcr(deviceId: string): Promise<boolean> {
+  const attempts: Array<{
+    candidates: string[];
+    description: string;
+    minXRatio?: number;
+    maxXRatio?: number;
+    minYRatio?: number;
+    maxYRatio?: number;
+  }> = [
+    {
+      candidates: QQ_FARM_OPEN_TEXTS,
+      description: "opening QQ classic farm mini program",
+      minXRatio: 0.58,
+      minYRatio: 0.2,
+      maxYRatio: 0.8,
+    },
+    {
+      candidates: QQ_FARM_RESULT_TEXTS,
+      description: "opening QQ classic farm result",
+      maxXRatio: 0.78,
+      minYRatio: 0.15,
+      maxYRatio: 0.8,
+    },
+    {
+      candidates: ["小游戏", "最近玩过"],
+      description: "opening QQ classic farm badge",
+      maxXRatio: 0.82,
+      minYRatio: 0.15,
+      maxYRatio: 0.8,
+    },
+  ];
+
+  for (const attempt of attempts) {
+    const tapped = await tryTapTextByOcr(deviceId, attempt.candidates, attempt.description, attempt);
+    if (!tapped) {
+      continue;
+    }
+
+    await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+    if (await waitForWeChatAppBrandOpen(deviceId)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function tryOpenQqFarmByPointCandidates(deviceId: string): Promise<boolean> {
+  const candidates: Array<{ point: PointRatio; description: string }> = [
+    { point: WECHAT_QQ_FARM_FORWARD_BUTTON_POINT, description: "opening QQ classic farm mini program via forward button" },
+    { point: WECHAT_QQ_FARM_RESULT_ROW_POINT, description: "opening QQ classic farm mini program via result row" },
+    { point: WECHAT_QQ_FARM_RESULT_ICON_POINT, description: "opening QQ classic farm mini program via result icon" },
+    { point: WECHAT_QQ_FARM_RESULT_BANNER_POINT, description: "opening QQ classic farm mini program via result banner" },
+  ];
+
+  for (const candidate of candidates) {
+    await tapCurrentScreenPoint(deviceId, candidate.point, candidate.description);
+    await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+    const topActivity = await waitForWeChatAppBrand(deviceId);
+    if (topActivity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function reopenWeChatHome(deviceId: string): Promise<void> {
+  await adb(deviceId, ["shell", "am", "force-stop", WECHAT_PACKAGE]);
+  await sleep(800);
+  await openWeChatApp(deviceId);
+  await sleep(WECHAT_OPEN_DELAY_MS);
 }
 
 async function openQqFarmFromWeChatSearch(deviceId: string): Promise<void> {
@@ -1385,18 +1787,9 @@ async function openQqFarmFromWeChatSearch(deviceId: string): Promise<void> {
     throw new Error(`未能进入 QQ经典农场 搜索结果页，当前前台 Activity: ${searchResultsActivity ?? "unknown"}`);
   }
 
-  const resultsScreenshot = PNG.sync.read(await captureScreen(deviceId));
-  const forwardButtonCenter = pointFromRatio(
-    resultsScreenshot.width,
-    resultsScreenshot.height,
-    WECHAT_QQ_FARM_FORWARD_BUTTON_POINT,
-  );
-  log("opening QQ classic farm mini program via search result forward button");
-  await tap(deviceId, forwardButtonCenter.x, forwardButtonCenter.y);
-  await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
-
-  const topActivity = await waitForWeChatAppBrand(deviceId);
-  if (!topActivity?.includes(`${WECHAT_PACKAGE}/.plugin.appbrand.ui.AppBrandUI`)) {
+  const opened = (await tryOpenQqFarmByOcr(deviceId)) || (await tryOpenQqFarmByPointCandidates(deviceId));
+  if (!opened) {
+    const topActivity = await readTopResumedActivity(deviceId);
     throw new Error(`未能进入 QQ经典农场 小程序，当前前台 Activity: ${topActivity ?? "unknown"}`);
   }
 }
@@ -1410,31 +1803,134 @@ async function dismissQqFarmTransientPopups(deviceId: string): Promise<void> {
   await sleep(800);
 }
 
-async function runQqFarmRoutine(deviceId: string): Promise<void> {
-  await sleep(QQ_FARM_POST_OPEN_DELAY_MS);
-  await dismissQqFarmTransientPopups(deviceId);
+async function runQqFarmPrimaryAction(
+  deviceId: string,
+  description: string,
+  fallbackPoint: PointRatio,
+): Promise<"ocr" | "point"> {
+  const tappedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_PRIMARY_ACTION_TEXTS, description, {
+    minXRatio: 0.22,
+    maxXRatio: 0.82,
+    minYRatio: 0.48,
+    maxYRatio: 0.94,
+  });
+  if (tappedByOcr) {
+    return "ocr";
+  }
 
-  await tapCurrentScreenPoint(deviceId, QQ_FARM_ONE_KEY_HARVEST_POINT, "running QQ farm one-key harvest");
-  await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
-  await dismissQqFarmTransientPopups(deviceId);
+  await tapCurrentScreenPoint(deviceId, fallbackPoint, description);
+  return "point";
+}
 
-  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_ENTRY_POINT, "opening QQ farm friend list");
+async function openQqFarmFriendList(deviceId: string): Promise<boolean> {
+  const openedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_FRIEND_ENTRY_TEXTS, "opening QQ farm friend list", {
+    minXRatio: 0.8,
+    minYRatio: 0.75,
+  });
+  if (!openedByOcr) {
+    await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_ENTRY_POINT, "opening QQ farm friend list");
+  }
   await sleep(QQ_FARM_FRIEND_PAGE_DELAY_MS);
 
-  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_FIRST_VISIT_POINT, "visiting first QQ farm friend");
+  const detection = await waitForQqFarmSceneOnAndroid(deviceId, 8, 1_000);
+  return detection.scene === "friends";
+}
+
+async function visitQqFarmFriend(deviceId: string): Promise<boolean> {
+  const visitedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_FRIEND_VISIT_TEXTS, "visiting first QQ farm friend", {
+    minXRatio: 0.58,
+    minYRatio: 0.18,
+    maxYRatio: 0.88,
+  });
+  if (!visitedByOcr) {
+    const candidates = await detectAndroidFriendVisitButtons(deviceId);
+    if (candidates.length > 0) {
+      const first = candidates[0];
+      log(`QQ farm friend page detected ${candidates.length} green visit buttons, using first: (${first.x}, ${first.y})`);
+      await tap(deviceId, first.x, first.y);
+    } else {
+      await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_FIRST_VISIT_POINT, "visiting first QQ farm friend");
+    }
+  }
   await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
 
-  await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT, "running QQ farm one-key steal");
+  const detection = await waitForQqFarmSceneOnAndroid(deviceId, 8, 1_000);
+  return detection.scene === "friend-farm";
+}
+
+type QqFarmRoutineResult = {
+  notes: string[];
+  finalScene: QqFarmSceneId;
+};
+
+async function runQqFarmRoutine(deviceId: string): Promise<QqFarmRoutineResult> {
+  const notes: string[] = [];
+  await sleep(QQ_FARM_POST_OPEN_DELAY_MS);
+  const readyScene = await waitForQqFarmSceneOnAndroid(deviceId, 6, 1_000);
+  if (readyScene.scene === "unknown") {
+    notes.push("未确认 QQ 农场主场景已就绪");
+  }
+  await dismissQqFarmTransientPopups(deviceId);
+
+  const initialScene = await ensureQqFarmHomeScene(deviceId);
+  if (initialScene === "home") {
+    notes.push("已识别自家农场");
+  } else if (initialScene !== "unknown") {
+    notes.push(`当前场景为 ${initialScene}，已继续按兜底流程处理`);
+  }
+
+  const homeActionSource = await runQqFarmPrimaryAction(deviceId, "running QQ farm primary farm action", QQ_FARM_ONE_KEY_HARVEST_POINT);
+  notes.push(homeActionSource === "ocr" ? "已通过 OCR 触发自家农场操作" : "已按默认热点执行自家农场操作");
   await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+  await dismissQqFarmTransientPopups(deviceId);
+
+  const friendListOpened = await openQqFarmFriendList(deviceId);
+  if (!friendListOpened) {
+    const detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+    notes.push("未确认打开好友列表");
+    return {
+      notes,
+      finalScene: detection.scene,
+    };
+  }
+  notes.push("已打开好友列表");
+  await sleep(800);
+
+  const visitedFriend = await visitQqFarmFriend(deviceId);
+  if (!visitedFriend) {
+    const detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+    notes.push("未确认进入好友农场");
+    return {
+      notes,
+      finalScene: detection.scene,
+    };
+  }
+  notes.push("已拜访好友农场");
+
+  const friendActionSource = await runQqFarmPrimaryAction(
+    deviceId,
+    "running QQ farm friend-farm action",
+    QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT,
+  );
+  notes.push(friendActionSource === "ocr" ? "已通过 OCR 触发好友农场操作" : "已按默认热点执行好友农场操作");
+  await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+
+  const returnedHomeScene = await ensureQqFarmHomeScene(deviceId);
+  if (returnedHomeScene === "home") {
+    notes.push("已回到自家农场");
+  }
+
+  const finalDetection = await waitForQqFarmSceneOnAndroid(deviceId, 4, 800);
+  return {
+    notes,
+    finalScene: finalDetection.scene,
+  };
 }
 
 async function openQqFarmMiniProgram(deviceId: string): Promise<void> {
   await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_HOME"]);
   await sleep(800);
-  await adb(deviceId, ["shell", "am", "force-stop", WECHAT_PACKAGE]);
-  await sleep(800);
-  await openWeChatApp(deviceId);
-  await sleep(WECHAT_OPEN_DELAY_MS);
+  await reopenWeChatHome(deviceId);
 
   try {
     await openQqFarmFromWeChatSearch(deviceId);
@@ -1443,6 +1939,8 @@ async function openQqFarmMiniProgram(deviceId: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     log(`QQ farm search flow failed, falling back to quick entry: ${message}`);
   }
+
+  await reopenWeChatHome(deviceId);
 
   if (await tryOpenQqFarmQuickEntry(deviceId)) {
     return;
@@ -1601,8 +2099,10 @@ export async function runAttendanceCommand(opts?: {
     : await ensureScrcpyRunning(device.id);
 
   await maybeEnsureFastClockEnabled(device.id);
-  await openDingTalkApp(device.id);
+  await openAttendancePageFromWorkbench(device.id);
   await sleep(OPEN_DELAY_MS);
+  await clickPunchButton(device.id, activeSlot);
+  await sleep(1_500);
   let clearedRecents = false;
   let extraNote: string | undefined;
   if (CLEAR_ANDROID_DINGTALK_AFTER_CLOCK_IN) {
@@ -1657,11 +2157,11 @@ export async function runQqFarmCommand(): Promise<ChatResponse> {
   }
 
   await openQqFarmMiniProgram(device.id);
-  await runQqFarmRoutine(device.id);
+  const routineResult = await runQqFarmRoutine(device.id);
   return {
     text: buildQqFarmSuccessText({
       device,
-      extraNote: "已完成弹框处理、收菜与好友偷菜",
+      extraNote: routineResult.notes.join("，"),
     }),
   };
 }

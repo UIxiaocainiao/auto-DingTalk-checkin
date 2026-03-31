@@ -44,6 +44,30 @@ corepack enable
 corepack pnpm install
 ```
 
+### 可选：安装 OCR 回退
+
+为减少因不同分辨率、WebView、自绘控件导致的定位失败，仓库支持通过 PaddleOCR 做文字识别回退，优先用于：
+
+- 钉钉工作台里的 `考勤打卡` 入口
+- 钉钉考勤页里的 `上班打卡` / `下班打卡` / `极速打卡`
+- 微信搜索结果页里的 `QQ经典农场` / `前往`
+- QQ 经典农场里的 `好友` / `拜访` / `回家` / `商店` / `商城` 等场景文字
+
+推荐安装到仓库本地虚拟环境：
+
+```bash
+uv venv .venv-paddleocr --python 3.9
+uv pip install --python .venv-paddleocr/bin/python paddlepaddle==3.2.0 paddleocr
+```
+
+默认会优先使用仓库内的 `.venv-paddleocr/bin/python`。常用开关：
+
+| 变量 | 说明 |
+| --- | --- |
+| `WEIXIN_OCR=0` | 关闭 OCR 回退 |
+| `WEIXIN_OCR_PYTHON=/path/to/python` | 指定 OCR 使用的 Python |
+| `WEIXIN_OCR_PADDLE_MODEL_VARIANT=mobile` | 指定 PaddleOCR 模型规格，默认 `mobile` |
+
 ### 仅扫码登录
 
 ```bash
@@ -119,6 +143,7 @@ corepack pnpm --filter weixin-acp start -- -- node ./my-agent.js
 - 如果同时连着两种设备，需显式设置 `WEIXIN_DEVICE_PLATFORM=android` 或 `WEIXIN_DEVICE_PLATFORM=ios`。
 - `打卡` 完成后默认会清掉钉钉后台。
 - 若钉钉出现验证码、滑块、人脸或其他安全校验，需要先人工处理，自动化不会替你过风控。
+- `偷菜` 会先识别 QQ 农场当前场景（主页 / 好友页 / 商店 / 好友农场），再按统一语义执行；文字菜单优先走 OCR，田地里的采摘/偷取/除草/除虫仍主要依赖画布热点与视觉兜底。
 
 ### 自动任务
 

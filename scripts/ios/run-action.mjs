@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -19,11 +19,91 @@ const APPIUM_LOG_FILE = path.join(STATE_DIR, "ios-appium.log");
 const APPIUM_BINARY = path.join(REPO_ROOT, "node_modules", ".bin", "appium");
 const APPIUM_EXTENSIONS_FILE = path.join(REPO_ROOT, "node_modules", ".cache", "appium", "extensions.yaml");
 const XCUITEST_DRIVER_PATH = path.join(REPO_ROOT, "node_modules", "appium-xcuitest-driver");
+const QQ_FARM_SPEC_PATH = path.join(REPO_ROOT, "packages", "agent-acp", "src", "qq-farm-spec.json");
 const DEFAULT_APPIUM_SERVER_URL = process.env.WEIXIN_IOS_APPIUM_SERVER_URL?.trim() || "http://127.0.0.1:4723";
+const DEFAULT_OCR_SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "ocr", "paddleocr.py");
+const DEFAULT_OCR_PYTHON = path.join(REPO_ROOT, ".venv-paddleocr", "bin", "python");
+const OCR_SCRIPT_PATH = process.env.WEIXIN_OCR_PADDLE_SCRIPT?.trim() || DEFAULT_OCR_SCRIPT_PATH;
+const OCR_PYTHON_COMMAND =
+  process.env.WEIXIN_OCR_PYTHON?.trim() ||
+  (existsSync(DEFAULT_OCR_PYTHON) ? DEFAULT_OCR_PYTHON : "python3");
+const OCR_MODEL_VARIANT = process.env.WEIXIN_OCR_PADDLE_MODEL_VARIANT?.trim() || "mobile";
 let PNG;
 try {
   ({ PNG } = workspaceRequire("pngjs"));
 } catch {}
+let reportedOcrUnavailable = false;
+
+function uniqueTexts(values) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function loadQqFarmSpec() {
+  try {
+    return JSON.parse(readFileSync(QQ_FARM_SPEC_PATH, "utf8"));
+  } catch {
+    return {
+      queryCandidates: ["QQ经典农场", "QQ农场", "经典农场"],
+      searchResultTexts: ["QQ经典农场", "QQ农场", "经典农场", "小游戏", "最近玩过"],
+      openTexts: ["前往", "进入", "游戏入口"],
+      scenes: {
+        home: { groups: [["仓库"], ["商店", "商城"], ["好友", "好友求助"]] },
+        friends: { groups: [["好友"], ["拜访", "同玩好友", "微信好友", "邀请", "访客"]] },
+        store: { groups: [["商店"], ["种子", "宠物", "装扮"]] },
+        "friend-farm": { groups: [["回家"], ["访客", "劳动光荣"]] },
+      },
+      actions: {
+        friendEntryTexts: ["好友"],
+        friendVisitTexts: ["拜访"],
+        returnHomeTexts: ["回家"],
+        storeEntryTexts: ["商店", "商城"],
+        rewardEntryTexts: ["好友求助", "奖励"],
+        primaryActionTexts: [
+          "一键采摘",
+          "一键收获",
+          "一键偷取",
+          "一键偷菜",
+          "一键除草",
+          "一键除虫",
+          "收获",
+          "偷取",
+          "偷菜",
+          "除草",
+          "除虫",
+        ],
+        friendTabTexts: {
+          samePlay: ["同玩好友"],
+          wechat: ["微信好友"],
+          invite: ["邀请"],
+          visitors: ["访客"],
+        },
+        storeTabTexts: {
+          seed: ["种子"],
+          pet: ["宠物"],
+          dress: ["装扮"],
+        },
+      },
+    };
+  }
+}
+
+const QQ_FARM_SHARED_SPEC = loadQqFarmSpec();
+const QQ_FARM_SHARED_QUERY_CANDIDATES = uniqueTexts(QQ_FARM_SHARED_SPEC.queryCandidates || []);
+const QQ_FARM_SHARED_RESULT_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.searchResultTexts || []);
+const QQ_FARM_OPEN_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.openTexts || []);
+const QQ_FARM_FRIEND_ENTRY_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.actions?.friendEntryTexts || ["好友"]);
+const QQ_FARM_FRIEND_VISIT_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.actions?.friendVisitTexts || ["拜访"]);
+const QQ_FARM_RETURN_HOME_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.actions?.returnHomeTexts || ["回家"]);
+const QQ_FARM_PRIMARY_ACTION_TEXTS = uniqueTexts(
+  QQ_FARM_SHARED_SPEC.actions?.primaryActionTexts || ["收获", "偷取", "除草", "除虫"],
+);
+const QQ_FARM_SCENES = QQ_FARM_SHARED_SPEC.scenes || {};
+const QQ_FARM_SCENE_PRIORITY = {
+  friends: 40,
+  store: 35,
+  "friend-farm": 30,
+  home: 10,
+};
 
 function resolveBooleanEnv(values, defaultValue) {
   for (const rawValue of values) {
@@ -83,18 +163,10 @@ const WECHAT_BUNDLE_ID = process.env.WEIXIN_IOS_WECHAT_BUNDLE_ID?.trim() || "com
 const DEFAULT_QQ_FARM_RESULT_COORD = JSON.stringify({ xRatio: 0.5, yRatio: 0.24 });
 const QQ_FARM_QUERY = process.env.WEIXIN_IOS_QQ_FARM_QUERY?.trim() || "QQ经典农场";
 const QQ_FARM_QUERY_CANDIDATES = [
-  ...new Set(
-    [QQ_FARM_QUERY, "QQ经典农场", "QQ农场", "经典农场"]
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ),
+  ...uniqueTexts([QQ_FARM_QUERY, ...QQ_FARM_SHARED_QUERY_CANDIDATES]),
 ];
 const QQ_FARM_RESULT_TEXTS = [
-  ...new Set(
-    [...QQ_FARM_QUERY_CANDIDATES, "QQ经典农场", "QQ农场", "经典农场"]
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ),
+  ...uniqueTexts([...QQ_FARM_QUERY_CANDIDATES, ...QQ_FARM_SHARED_RESULT_TEXTS]),
 ];
 const QQ_FARM_RESULT_COORD =
   process.env.WEIXIN_IOS_QQ_FARM_RESULT_COORD?.trim() || DEFAULT_QQ_FARM_RESULT_COORD;
@@ -145,6 +217,18 @@ function fail(message) {
   throw new Error(message);
 }
 
+function isOcrDisabled() {
+  const raw = process.env.WEIXIN_OCR?.trim().toLowerCase();
+  return raw === "0" || raw === "false" || raw === "off";
+}
+
+function normalizeOcrText(value) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^\p{L}\p{N}]/gu, "");
+}
 function printUsage() {
   console.log(`Usage:
   node scripts/ios/run-action.mjs doctor
@@ -649,6 +733,246 @@ async function capturePngScreenshot(browser) {
   return PNG.sync.read(Buffer.from(base64, "base64"));
 }
 
+function findBestOcrBlock(blocks, candidates, opts = {}) {
+  const normalizedCandidates = candidates
+    .map((candidate) => normalizeOcrText(candidate))
+    .filter(Boolean);
+
+  let best;
+  for (const block of blocks) {
+    if (typeof opts.minX === "number" && block.centerX < opts.minX) continue;
+    if (typeof opts.maxX === "number" && block.centerX > opts.maxX) continue;
+    if (typeof opts.minY === "number" && block.centerY < opts.minY) continue;
+    if (typeof opts.maxY === "number" && block.centerY > opts.maxY) continue;
+
+    const normalizedBlock = normalizeOcrText(block.text);
+    if (!normalizedBlock) continue;
+
+    for (let index = 0; index < normalizedCandidates.length; index += 1) {
+      const candidate = normalizedCandidates[index];
+      const exactMatch = normalizedBlock === candidate;
+      const fuzzyMatch =
+        normalizedBlock.includes(candidate) ||
+        candidate.includes(normalizedBlock);
+      if (!exactMatch && !fuzzyMatch) {
+        continue;
+      }
+
+      const lengthPenalty = Math.abs(normalizedBlock.length - candidate.length) / 100;
+      const score = (exactMatch ? 100 : 10) - index - lengthPenalty + (block.score ?? 0.5);
+      if (!best || score > best.score) {
+        best = { block, score };
+      }
+    }
+  }
+
+  return best?.block;
+}
+
+async function recognizeTextBlocks(browser) {
+  if (isOcrDisabled() || !PNG || !existsSync(OCR_SCRIPT_PATH)) {
+    return undefined;
+  }
+
+  const base64 = await browser.takeScreenshot();
+  const buffer = Buffer.from(base64, "base64");
+  const png = PNG.sync.read(buffer);
+  const filePath = path.join(STATE_DIR, `ios-ocr-${process.pid}-${Date.now()}.png`);
+
+  try {
+    await mkdir(STATE_DIR, { recursive: true });
+    writeFileSync(filePath, buffer);
+    const stdout = execFileSync(
+      OCR_PYTHON_COMMAND,
+      [
+        OCR_SCRIPT_PATH,
+        "--image",
+        filePath,
+        "--model-variant",
+        OCR_MODEL_VARIANT,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK:
+            process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK ?? "True",
+        },
+      },
+    );
+    const parsed = JSON.parse(stdout);
+    const blocks = Array.isArray(parsed.blocks)
+      ? parsed.blocks
+          .filter((item) =>
+            item &&
+            typeof item.text === "string" &&
+            Array.isArray(item.center) &&
+            item.center.length === 2 &&
+            Array.isArray(item.box) &&
+            item.box.length === 4,
+          )
+          .map((item) => ({
+            text: item.text.trim(),
+            score: typeof item.score === "number" ? item.score : null,
+            left: item.box[0],
+            top: item.box[1],
+            right: item.box[2],
+            bottom: item.box[3],
+            centerX: item.center[0],
+            centerY: item.center[1],
+          }))
+      : [];
+
+    return {
+      blocks,
+      imageWidth: png.width,
+      imageHeight: png.height,
+    };
+  } catch (error) {
+    if (!reportedOcrUnavailable) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`[ocr] iOS OCR unavailable: ${message}`);
+      reportedOcrUnavailable = true;
+    }
+    return undefined;
+  } finally {
+    rmSync(filePath, { force: true });
+  }
+}
+
+async function tryTapTextByOcr(browser, candidates, description, opts = {}) {
+  const ocr = await recognizeTextBlocks(browser);
+  if (!ocr || ocr.blocks.length === 0) {
+    return false;
+  }
+
+  const matched = findBestOcrBlock(ocr.blocks, candidates, {
+    minX: typeof opts.minXRatio === "number" ? ocr.imageWidth * opts.minXRatio : undefined,
+    maxX: typeof opts.maxXRatio === "number" ? ocr.imageWidth * opts.maxXRatio : undefined,
+    minY: typeof opts.minYRatio === "number" ? ocr.imageHeight * opts.minYRatio : undefined,
+    maxY: typeof opts.maxYRatio === "number" ? ocr.imageHeight * opts.maxYRatio : undefined,
+  });
+  if (!matched) {
+    return false;
+  }
+
+  const logicalSize = await browser.getWindowSize();
+  const point = {
+    x: Math.round((matched.centerX / ocr.imageWidth) * logicalSize.width),
+    y: Math.round((matched.centerY / ocr.imageHeight) * logicalSize.height),
+  };
+  await mobileTapPoint(browser, point, description, "OCR");
+  log(`[ocr] 命中文本: ${matched.text}`);
+  return true;
+}
+
+function detectQqFarmSceneFromBlocks(blocks) {
+  let best = {
+    scene: "unknown",
+    matchedTexts: [],
+    matchedGroups: 0,
+  };
+  let bestScore = 0;
+
+  for (const [scene, definition] of Object.entries(QQ_FARM_SCENES)) {
+    const groups = Array.isArray(definition?.groups) ? definition.groups : [];
+    if (groups.length === 0) {
+      continue;
+    }
+
+    const matchedTexts = [];
+    let matchedGroups = 0;
+    for (const group of groups) {
+      const match = findBestOcrBlock(blocks, Array.isArray(group) ? group : []);
+      if (!match) {
+        continue;
+      }
+      matchedGroups += 1;
+      matchedTexts.push(match.text);
+    }
+
+    if (matchedGroups === 0) {
+      continue;
+    }
+
+    const score =
+      matchedGroups * 10 +
+      (matchedGroups === groups.length ? 100 : 0) +
+      (QQ_FARM_SCENE_PRIORITY[scene] ?? 0);
+    if (score <= bestScore) {
+      continue;
+    }
+
+    best = {
+      scene,
+      matchedTexts,
+      matchedGroups,
+    };
+    bestScore = score;
+  }
+
+  return best;
+}
+
+async function recognizeQqFarmScene(browser) {
+  const ocr = await recognizeTextBlocks(browser);
+  if (!ocr) {
+    return {
+      scene: "unknown",
+      matchedTexts: [],
+      matchedGroups: 0,
+    };
+  }
+  return detectQqFarmSceneFromBlocks(ocr.blocks);
+}
+
+async function waitForQqFarmScene(browser, attempts = 8, delayMs = 800) {
+  let detection = await recognizeQqFarmScene(browser);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (detection.scene !== "unknown") {
+      log(`QQ农场场景识别: ${detection.scene}${detection.matchedTexts.length > 0 ? ` (${detection.matchedTexts.join(", ")})` : ""}`);
+      return detection;
+    }
+    await sleep(delayMs);
+    detection = await recognizeQqFarmScene(browser);
+  }
+  return detection;
+}
+
+async function ensureQqFarmHomeScene(browser) {
+  let detection = await waitForQqFarmScene(browser, 3, 800);
+  if (detection.scene === "home" || detection.scene === "unknown") {
+    return detection.scene;
+  }
+
+  if (detection.scene === "friend-farm") {
+    const returned = await tryTapTextByOcr(browser, QQ_FARM_RETURN_HOME_TEXTS, "QQ农场回家按钮", {
+      minXRatio: 0.74,
+      minYRatio: 0.62,
+    });
+    if (returned) {
+      await sleep(1_500);
+      detection = await recognizeQqFarmScene(browser);
+      if (detection.scene === "home") {
+        return detection.scene;
+      }
+    }
+  }
+
+  if (detection.scene === "friends" || detection.scene === "store") {
+    await mobileTapPointValue(
+      browser,
+      QQ_FARM_FRIEND_POPUP_CLOSE_COORD,
+      detection.scene === "friends" ? "QQ农场好友页关闭按钮" : "QQ农场商店关闭按钮",
+      "默认 QQ 农场关闭坐标",
+    ).catch(() => false);
+    await sleep(1_000);
+    detection = await recognizeQqFarmScene(browser);
+  }
+
+  return detection.scene;
+}
+
 function findGreenButtonCenters(png) {
   if (!png) {
     return [];
@@ -859,15 +1183,22 @@ async function runDingTalkClockIn(browser) {
 
   await tapAnySelector(browser, workbenchSelectors, "钉钉工作台", {
     maxScrolls: 1,
-  }).catch(() => {});
+  }).catch(() => false);
   await tapConfiguredPoint(browser, "WEIXIN_IOS_DINGTALK_WORKBENCH_TAB_COORD", "钉钉工作台").catch(() => false);
+  await tryTapTextByOcr(browser, ["工作台", "工作台应用"], "钉钉工作台", {
+    maxYRatio: 0.4,
+  }).catch(() => false);
 
   const openedAttendance =
     await tapAnySelector(browser, attendanceSelectors, "考勤打卡入口", {
       direction: "up",
       maxScrolls: 6,
     }) ||
-    await tapConfiguredPoint(browser, "WEIXIN_IOS_DINGTALK_ATTENDANCE_ENTRY_COORD", "考勤打卡入口");
+    await tapConfiguredPoint(browser, "WEIXIN_IOS_DINGTALK_ATTENDANCE_ENTRY_COORD", "考勤打卡入口") ||
+    await tryTapTextByOcr(browser, ["考勤打卡", "签到", "打卡"], "考勤打卡入口", {
+      minYRatio: 0.08,
+      maxYRatio: 0.92,
+    });
 
   if (!openedAttendance) {
     fail("未找到钉钉“考勤打卡”入口，请先用 Appium Inspector 确认选择器或配置 WEIXIN_IOS_DINGTALK_ATTENDANCE_ENTRY_COORD。");
@@ -899,7 +1230,14 @@ async function runDingTalkClockIn(browser) {
     ) ||
     await tapConfiguredPoint(browser, "WEIXIN_IOS_DINGTALK_GENERIC_PUNCH_COORD", "通用打卡按钮");
 
-  if (!punched) {
+  const punchedWithOcr =
+    punched ||
+    await tryTapTextByOcr(browser, [...new Set([...slotSpecificTexts, ...genericPunchTexts])], `${slotLabel}按钮`, {
+      minYRatio: 0.3,
+      maxYRatio: 0.95,
+    });
+
+  if (!punchedWithOcr) {
     fail(`已进入钉钉考勤页，但未定位到${slotLabel}按钮。请先配置对应坐标或补充选择器。`);
   }
 
@@ -1140,6 +1478,11 @@ async function ensureQqFarmMiniProgramOpened(browser) {
   const opened =
     await tapAnySelector(browser, QQ_FARM_FORWARD_SELECTORS, "QQ经典农场前往按钮", {
       rawTap: true,
+    }) ||
+    await tryTapTextByOcr(browser, QQ_FARM_OPEN_TEXTS, "QQ经典农场前往按钮", {
+      minXRatio: 0.55,
+      minYRatio: 0.15,
+      maxYRatio: 0.85,
     });
   if (!opened) {
     return false;
@@ -1171,6 +1514,12 @@ async function tryOpenQqFarmSearchResult(browser, query) {
       await tapAnySelector(browser, buildQqFarmResultSelectors(query), "QQ经典农场搜索结果", {
         direction: "up",
         maxScrolls: 2,
+      }),
+    async () =>
+      await tryTapTextByOcr(browser, [query, ...QQ_FARM_RESULT_TEXTS, "小游戏", "最近玩过"], "QQ经典农场搜索结果", {
+        maxXRatio: 0.82,
+        minYRatio: 0.12,
+        maxYRatio: 0.85,
       }),
     async () =>
       await tapPointValue(
@@ -1208,6 +1557,15 @@ async function tryOpenQqFarmSearchResult(browser, query) {
 }
 
 async function tapFriendVisitButton(browser) {
+  const tappedByOcr = await tryTapTextByOcr(browser, QQ_FARM_FRIEND_VISIT_TEXTS, "QQ农场好友页拜访按钮", {
+    minXRatio: 0.56,
+    minYRatio: 0.18,
+    maxYRatio: 0.9,
+  });
+  if (tappedByOcr) {
+    return true;
+  }
+
   const candidates = await detectFriendVisitButtons(browser);
   if (candidates.length > 0) {
     const first = candidates[0];
@@ -1227,6 +1585,16 @@ async function tapFriendVisitButton(browser) {
 }
 
 async function runPrimaryFarmAction(browser, sourceLabel, repeat = QQ_FARM_PRIMARY_ACTION_REPEAT) {
+  const ocrTapped = await tryTapTextByOcr(browser, QQ_FARM_PRIMARY_ACTION_TEXTS, "QQ农场主操作按钮", {
+    minXRatio: 0.22,
+    maxXRatio: 0.82,
+    minYRatio: 0.48,
+    maxYRatio: 0.95,
+  });
+  if (ocrTapped) {
+    return "ocr";
+  }
+
   for (let index = 0; index < Math.max(1, repeat); index += 1) {
     await mobileTapPointValue(
       browser,
@@ -1238,9 +1606,11 @@ async function runPrimaryFarmAction(browser, sourceLabel, repeat = QQ_FARM_PRIMA
       await sleep(QQ_FARM_PRIMARY_ACTION_DELAY_MS);
     }
   }
+  return "point";
 }
 
 async function runDefaultQqFarmRoutine(browser) {
+  const notes = [];
   await mobileTapPointValue(
     browser,
     QQ_FARM_REWARD_COORD,
@@ -1251,30 +1621,57 @@ async function runDefaultQqFarmRoutine(browser) {
   ).catch(() => false);
   await sleep(800);
 
-  await runPrimaryFarmAction(
+  const readyScene = await waitForQqFarmScene(browser, 6, 1_000);
+  if (readyScene.scene === "unknown") {
+    notes.push("未确认 QQ 农场主场景已就绪");
+  }
+
+  const initialScene = await ensureQqFarmHomeScene(browser);
+  if (initialScene === "home") {
+    notes.push("已识别自家农场");
+  } else if (initialScene !== "unknown") {
+    notes.push(`当前场景为 ${initialScene}，已继续按兜底流程处理`);
+  }
+
+  const homeActionSource = await runPrimaryFarmAction(
     browser,
     process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
       ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
       : "默认 QQ 农场一键操作坐标",
   );
+  notes.push(homeActionSource === "ocr" ? "已通过 OCR 触发自家农场操作" : "已按默认热点执行自家农场操作");
   await sleep(1_000);
 
-  const openedFriendList = await mobileTapPointValue(
-    browser,
-    QQ_FARM_FRIEND_ENTRY_COORD,
-    "QQ农场好友入口",
-    process.env.WEIXIN_IOS_QQ_FARM_FRIEND_ENTRY_COORD?.trim()
-      ? "WEIXIN_IOS_QQ_FARM_FRIEND_ENTRY_COORD"
-      : "默认 QQ 农场好友入口坐标",
-  );
+  const openedFriendList =
+    (await tryTapTextByOcr(browser, QQ_FARM_FRIEND_ENTRY_TEXTS, "QQ农场好友入口", {
+      minXRatio: 0.8,
+      minYRatio: 0.75,
+    })) ||
+    (await mobileTapPointValue(
+      browser,
+      QQ_FARM_FRIEND_ENTRY_COORD,
+      "QQ农场好友入口",
+      process.env.WEIXIN_IOS_QQ_FARM_FRIEND_ENTRY_COORD?.trim()
+        ? "WEIXIN_IOS_QQ_FARM_FRIEND_ENTRY_COORD"
+        : "默认 QQ 农场好友入口坐标",
+    ));
   if (!openedFriendList) {
     return {
       friendVisited: false,
-      message: "已执行自家农场动作，但未打开好友列表。",
+      message: [...notes, "未打开好友列表"].join("，"),
     };
   }
 
   await sleep(QQ_FARM_FRIEND_PAGE_DELAY_MS);
+  const friendScene = await waitForQqFarmScene(browser, 8, 1_000);
+  if (friendScene.scene !== "friends") {
+    return {
+      friendVisited: false,
+      message: [...notes, `未确认进入好友页（当前场景 ${friendScene.scene}）`].join("，"),
+    };
+  }
+  notes.push("已打开好友列表");
+
   await mobileTapPointValue(
     browser,
     QQ_FARM_FRIEND_POPUP_CLOSE_COORD,
@@ -1289,20 +1686,35 @@ async function runDefaultQqFarmRoutine(browser) {
   if (!visited) {
     return {
       friendVisited: false,
-      message: "已执行自家农场动作，但未识别到好友拜访按钮。",
+      message: [...notes, "未识别到好友拜访按钮"].join("，"),
     };
   }
 
   await sleep(QQ_FARM_POST_VISIT_DELAY_MS);
-  await runPrimaryFarmAction(
+  const visitedScene = await waitForQqFarmScene(browser, 8, 1_000);
+  if (visitedScene.scene !== "friend-farm") {
+    return {
+      friendVisited: false,
+      message: [...notes, `未确认进入好友农场（当前场景 ${visitedScene.scene}）`].join("，"),
+    };
+  }
+  notes.push("已拜访好友农场");
+
+  const friendActionSource = await runPrimaryFarmAction(
     browser,
     process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
       ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
       : "默认 QQ 农场一键操作坐标",
   );
+  notes.push(friendActionSource === "ocr" ? "已通过 OCR 触发好友农场操作" : "已按默认热点执行好友农场操作");
+
+  const returnedHomeScene = await ensureQqFarmHomeScene(browser);
+  if (returnedHomeScene === "home") {
+    notes.push("已回到自家农场");
+  }
   return {
     friendVisited: true,
-    message: "已执行领取奖励、自家农场一键操作，并完成好友拜访与偷菜动作。",
+    message: notes.join("，"),
   };
 }
 
