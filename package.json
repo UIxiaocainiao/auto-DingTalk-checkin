@@ -1,6 +1,7 @@
 {
   "private": true,
   "scripts": {
+    "git:pull": "bash ./scripts/git-pull.sh",
     "git:sync": "bash ./scripts/git-sync.sh",
     "typecheck": "pnpm -r run typecheck",
     "ios:action": "node ./scripts/ios/run-action.mjs",

@@ -103,6 +103,33 @@ corepack pnpm git:sync -- "feat: update qq farm store module"
 GIT_SYNC_BRANCH=main corepack pnpm git:sync -- "chore: sync latest changes"
 ```
 
+### 一键从 GitHub 拉取最新代码到本地
+
+仓库根目录也内置了一条一键拉取脚本：
+
+```bash
+corepack pnpm git:pull
+```
+
+默认行为：
+
+- 先执行 `git fetch`
+- 再执行 `git pull --ff-only`
+- 默认拉取当前分支的上游分支
+- 如果工作区有未提交改动，会先拒绝执行，避免把本地改动和远端更新混在一起
+
+如果你要显式指定远端和分支：
+
+```bash
+corepack pnpm git:pull -- origin main
+```
+
+如果你确认要在存在本地改动时继续拉取：
+
+```bash
+GIT_PULL_ALLOW_DIRTY=1 corepack pnpm git:pull
+```
+
 ### 可选：安装 OCR 回退
 
 为减少因不同分辨率、WebView、自绘控件导致的定位失败，仓库支持通过 PaddleOCR 做文字识别回退，优先用于：
