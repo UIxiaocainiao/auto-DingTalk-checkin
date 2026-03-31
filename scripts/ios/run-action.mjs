@@ -9,6 +9,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { remote } from "webdriverio";
+import {
+  describeQqFarmStoreSeeds,
+  parseQqFarmStoreSeeds,
+  pickLatestUnlockedQqFarmStoreSeed,
+} from "./qq-farm-store.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +58,17 @@ function loadQqFarmSpec() {
         "friend-farm": { groups: [["回家"], ["访客", "劳动光荣"]] },
       },
       actions: {
+        homeOneKeyActions: [
+          { id: "harvest", note: "一键收获", texts: ["一键采摘", "一键收获", "收获"] },
+          { id: "weed", note: "一键除草", texts: ["一键除草", "除草"] },
+          { id: "pest", note: "一键除虫", texts: ["一键除虫", "除虫"] },
+          { id: "sow", note: "一键播种", texts: ["一键播种", "播种"] },
+        ],
+        friendOneKeyActions: [
+          { id: "steal", note: "一键偷取", texts: ["一键偷取", "一键偷菜", "偷取", "偷菜", "一键采摘", "一键收获", "收获"] },
+          { id: "weed", note: "一键除草", texts: ["一键除草", "除草"] },
+          { id: "pest", note: "一键除虫", texts: ["一键除虫", "除虫"] },
+        ],
         friendEntryTexts: ["好友"],
         friendVisitTexts: ["拜访"],
         returnHomeTexts: ["回家"],
@@ -97,6 +113,14 @@ const QQ_FARM_RETURN_HOME_TEXTS = uniqueTexts(QQ_FARM_SHARED_SPEC.actions?.retur
 const QQ_FARM_PRIMARY_ACTION_TEXTS = uniqueTexts(
   QQ_FARM_SHARED_SPEC.actions?.primaryActionTexts || ["收获", "偷取", "除草", "除虫"],
 );
+const QQ_FARM_HOME_ONE_KEY_ACTIONS = (QQ_FARM_SHARED_SPEC.actions?.homeOneKeyActions || []).map((action) => ({
+  ...action,
+  texts: uniqueTexts(action.texts || []),
+}));
+const QQ_FARM_FRIEND_ONE_KEY_ACTIONS = (QQ_FARM_SHARED_SPEC.actions?.friendOneKeyActions || []).map((action) => ({
+  ...action,
+  texts: uniqueTexts(action.texts || []),
+}));
 const QQ_FARM_SCENES = QQ_FARM_SHARED_SPEC.scenes || {};
 const QQ_FARM_SCENE_PRIORITY = {
   friends: 40,
@@ -175,6 +199,11 @@ const DEFAULT_QQ_FARM_PRIMARY_ACTION_COORD = JSON.stringify({ xRatio: 0.5, yRati
 const DEFAULT_QQ_FARM_FRIEND_ENTRY_COORD = JSON.stringify({ xRatio: 0.9641, yRatio: 0.94076 });
 const DEFAULT_QQ_FARM_FRIEND_VISIT_COORD = JSON.stringify({ xRatio: 0.85128, yRatio: 0.43128 });
 const DEFAULT_QQ_FARM_FRIEND_POPUP_CLOSE_COORD = JSON.stringify({ xRatio: 0.86667, yRatio: 0.21801 });
+const DEFAULT_QQ_FARM_STORE_ENTRY_COORD = JSON.stringify({ xRatio: 0.10533, yRatio: 0.963 });
+const DEFAULT_QQ_FARM_STORE_CLOSE_COORD = JSON.stringify({ xRatio: 0.66767, yRatio: 0.0725 });
+const QQ_FARM_PLOT_TOP_COORD = JSON.stringify({ xRatio: 0.53867, yRatio: 0.516 });
+const QQ_FARM_PLOT_DOWN_LEFT_VECTOR = JSON.stringify({ xRatio: -0.03067, yRatio: 0.0235 });
+const QQ_FARM_PLOT_DOWN_RIGHT_VECTOR = JSON.stringify({ xRatio: 0.03033, yRatio: 0.0235 });
 const QQ_FARM_REWARD_COORD =
   process.env.WEIXIN_IOS_QQ_FARM_REWARD_COORD?.trim() || DEFAULT_QQ_FARM_REWARD_COORD;
 const QQ_FARM_PRIMARY_ACTION_COORD =
@@ -185,6 +214,37 @@ const QQ_FARM_FRIEND_VISIT_COORD =
   process.env.WEIXIN_IOS_QQ_FARM_FRIEND_VISIT_COORD?.trim() || DEFAULT_QQ_FARM_FRIEND_VISIT_COORD;
 const QQ_FARM_FRIEND_POPUP_CLOSE_COORD =
   process.env.WEIXIN_IOS_QQ_FARM_FRIEND_POPUP_CLOSE_COORD?.trim() || DEFAULT_QQ_FARM_FRIEND_POPUP_CLOSE_COORD;
+const QQ_FARM_STORE_ENTRY_COORD =
+  process.env.WEIXIN_IOS_QQ_FARM_STORE_ENTRY_COORD?.trim() || DEFAULT_QQ_FARM_STORE_ENTRY_COORD;
+const QQ_FARM_STORE_CLOSE_COORD =
+  process.env.WEIXIN_IOS_QQ_FARM_STORE_CLOSE_COORD?.trim() || DEFAULT_QQ_FARM_STORE_CLOSE_COORD;
+const QQ_FARM_PLOT_SAMPLE_HALF_WIDTH_RATIO = Number.parseFloat(
+  process.env.WEIXIN_IOS_QQ_FARM_PLOT_SAMPLE_HALF_WIDTH_RATIO ?? "0.018",
+);
+const QQ_FARM_PLOT_SAMPLE_HALF_HEIGHT_RATIO = Number.parseFloat(
+  process.env.WEIXIN_IOS_QQ_FARM_PLOT_SAMPLE_HALF_HEIGHT_RATIO ?? "0.014",
+);
+const QQ_FARM_PLOT_ROWS = Number.parseInt(process.env.WEIXIN_IOS_QQ_FARM_PLOT_ROWS ?? "4", 10);
+const QQ_FARM_PLOT_COLUMNS = Number.parseInt(process.env.WEIXIN_IOS_QQ_FARM_PLOT_COLUMNS ?? "4", 10);
+const QQ_FARM_SEED_CHOOSER_DELAY_MS = Number.parseInt(
+  process.env.WEIXIN_IOS_QQ_FARM_SEED_CHOOSER_DELAY_MS ?? "700",
+  10,
+);
+const QQ_FARM_POST_PLANT_DELAY_MS = Number.parseInt(
+  process.env.WEIXIN_IOS_QQ_FARM_POST_PLANT_DELAY_MS ?? "900",
+  10,
+);
+const QQ_FARM_BATCH_DRAG_DURATION_SECONDS = Number.parseFloat(
+  process.env.WEIXIN_IOS_QQ_FARM_BATCH_DRAG_DURATION_SECONDS ?? "0.45",
+);
+const QQ_FARM_BATCH_MIN_PLOTS = Number.parseInt(
+  process.env.WEIXIN_IOS_QQ_FARM_BATCH_MIN_PLOTS ?? "3",
+  10,
+);
+const QQ_FARM_SINGLE_PLANT_DELAY_MS = Number.parseInt(
+  process.env.WEIXIN_IOS_QQ_FARM_SINGLE_PLANT_DELAY_MS ?? "450",
+  10,
+);
 const QQ_FARM_FRIEND_PAGE_DELAY_MS = Number.parseInt(
   process.env.WEIXIN_IOS_QQ_FARM_FRIEND_PAGE_DELAY_MS ?? "1200",
   10,
@@ -200,6 +260,10 @@ const QQ_FARM_PRIMARY_ACTION_DELAY_MS = Number.parseInt(
 const QQ_FARM_PRIMARY_ACTION_REPEAT = Number.parseInt(
   process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_REPEAT ?? "2",
   10,
+);
+const QQ_FARM_PLOT_TYPE_TEXTS = ["黑土地", "红土地", "金土地", "紫土地", "普通土地"];
+const QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO = Number.parseFloat(
+  process.env.WEIXIN_IOS_QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO ?? "0.84",
 );
 const AUTO_START_APPIUM = !["0", "false", "off"].includes(
   process.env.WEIXIN_IOS_AUTO_START_APPIUM?.trim().toLowerCase() || "",
@@ -579,6 +643,253 @@ async function mobileTapPointValue(browser, rawValue, description, sourceLabel) 
   return true;
 }
 
+function addPointValues(base, left, leftSteps, right, rightSteps) {
+  return {
+    xRatio: base.xRatio + left.xRatio * leftSteps + right.xRatio * rightSteps,
+    yRatio: base.yRatio + left.yRatio * leftSteps + right.yRatio * rightSteps,
+  };
+}
+
+function classifyQqFarmPlotFromPng(png, point) {
+  const halfWidth = Math.max(8, Math.round(png.width * QQ_FARM_PLOT_SAMPLE_HALF_WIDTH_RATIO));
+  const halfHeight = Math.max(6, Math.round(png.height * QQ_FARM_PLOT_SAMPLE_HALF_HEIGHT_RATIO));
+  let emptyPixels = 0;
+  let ripePixels = 0;
+  let growingPixels = 0;
+  let lockedPixels = 0;
+  let sampled = 0;
+
+  for (let offsetY = -halfHeight; offsetY <= halfHeight; offsetY += 1) {
+    for (let offsetX = -halfWidth; offsetX <= halfWidth; offsetX += 1) {
+      if (Math.abs(offsetX) / halfWidth + Math.abs(offsetY) / halfHeight > 1) {
+        continue;
+      }
+
+      const x = Math.max(0, Math.min(png.width - 1, point.x + offsetX));
+      const y = Math.max(0, Math.min(png.height - 1, point.y + offsetY));
+      const index = (y * png.width + x) * 4;
+      const a = png.data[index + 3];
+      if (a < 180) {
+        continue;
+      }
+
+      const r = png.data[index];
+      const g = png.data[index + 1];
+      const b = png.data[index + 2];
+      sampled += 1;
+
+      if (r >= 170 && g >= 135 && b < 120 && r - g < 60) {
+        ripePixels += 1;
+        continue;
+      }
+      if (g >= 95 && g > r + 10 && g > b + 8) {
+        growingPixels += 1;
+        continue;
+      }
+      if (r >= 40 && r <= 130 && g >= 25 && g <= 110 && b <= 90 && r - g < 35) {
+        emptyPixels += 1;
+        continue;
+      }
+      if (
+        r >= 110 &&
+        g >= 100 &&
+        b >= 90 &&
+        Math.abs(r - g) < 32 &&
+        Math.abs(g - b) < 32
+      ) {
+        lockedPixels += 1;
+      }
+    }
+  }
+
+  if (sampled === 0) {
+    return "unknown";
+  }
+
+  if (ripePixels / sampled >= 0.45) {
+    return "ripe";
+  }
+  if (emptyPixels / sampled >= 0.3) {
+    return "empty";
+  }
+  if (growingPixels / sampled >= 0.28) {
+    return "growing";
+  }
+  if (lockedPixels / sampled >= 0.35) {
+    return "locked";
+  }
+  return "unknown";
+}
+
+async function detectQqFarmPlots(browser) {
+  const png = await capturePngScreenshot(browser);
+  if (!png) {
+    return [];
+  }
+  const logicalSize = await browser.getWindowSize();
+  const top = parsePointValue(QQ_FARM_PLOT_TOP_COORD);
+  const downLeft = parsePointValue(QQ_FARM_PLOT_DOWN_LEFT_VECTOR);
+  const downRight = parsePointValue(QQ_FARM_PLOT_DOWN_RIGHT_VECTOR);
+  if (!top || !downLeft || !downRight) {
+    return [];
+  }
+
+  const plots = [];
+  for (let row = 0; row < QQ_FARM_PLOT_ROWS; row += 1) {
+    for (let column = 0; column < QQ_FARM_PLOT_COLUMNS; column += 1) {
+      const point = addPointValues(top, downLeft, row, downRight, column);
+      const imagePoint = {
+        x: Math.round(png.width * point.xRatio),
+        y: Math.round(png.height * point.yRatio),
+      };
+      plots.push({
+        row,
+        column,
+        screenRow: row + column,
+        xRatio: point.xRatio,
+        yRatio: point.yRatio,
+        tapX: Math.round(logicalSize.width * point.xRatio),
+        tapY: Math.round(logicalSize.height * point.yRatio),
+        state: classifyQqFarmPlotFromPng(png, imagePoint),
+      });
+    }
+  }
+  return plots;
+}
+
+function describeQqFarmPlots(plots) {
+  const counts = { empty: 0, ripe: 0, growing: 0, locked: 0, unknown: 0 };
+  for (const plot of plots) {
+    counts[plot.state] += 1;
+  }
+  return `空地 ${counts.empty} 块，成熟 ${counts.ripe} 块，生长中 ${counts.growing} 块，锁定 ${counts.locked} 块`;
+}
+
+function compareQqFarmPlotsTopRightFirst(left, right) {
+  return left.row - right.row || right.column - left.column;
+}
+
+function parsePositiveIntegerText(raw) {
+  const normalized = raw.replace(/[^\d]/g, "");
+  if (!normalized) {
+    return undefined;
+  }
+  const value = Number.parseInt(normalized, 10);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function findAvailableSeedChoice(ocr) {
+  if (!ocr) {
+    return undefined;
+  }
+
+  const candidates = ocr.blocks
+    .map((block) => ({
+      block,
+      count: parsePositiveIntegerText(block.text),
+    }))
+    .filter(
+      (entry) =>
+        typeof entry.count === "number" &&
+        entry.block.centerY >= ocr.imageHeight * 0.58 &&
+        entry.block.centerY <= ocr.imageHeight * 0.82 &&
+        entry.block.centerX >= ocr.imageWidth * 0.2 &&
+        entry.block.centerX <= ocr.imageWidth * 0.92,
+    )
+    .sort((left, right) => right.block.centerX - left.block.centerX || right.count - left.count);
+
+  return candidates[0];
+}
+
+function seedChoicePointFromOcr(ocr, choice) {
+  if (!ocr || !choice) {
+    return undefined;
+  }
+
+  return {
+    x: Math.round((choice.block.centerX / ocr.imageWidth) * ocr.logicalWidth),
+    y: Math.round(((choice.block.centerY + Math.round(ocr.imageHeight * 0.022)) / ocr.imageHeight) * ocr.logicalHeight),
+  };
+}
+
+function storeSeedPointFromOcr(ocr, seed) {
+  if (!ocr || !seed) {
+    return undefined;
+  }
+
+  return {
+    x: Math.round(((seed.tapX ?? seed.centerX) / ocr.imageWidth) * ocr.logicalWidth),
+    y: Math.round(((seed.tapY ?? seed.centerY) / ocr.imageHeight) * ocr.logicalHeight),
+  };
+}
+
+async function dragBetweenPoints(browser, from, to, description) {
+  try {
+    await browser.execute("mobile: dragFromToForDuration", {
+      duration: QQ_FARM_BATCH_DRAG_DURATION_SECONDS,
+      fromX: from.x,
+      fromY: from.y,
+      toX: to.x,
+      toY: to.y,
+    });
+  } catch {
+    await browser.performActions([
+      {
+        type: "pointer",
+        id: "finger1",
+        parameters: { pointerType: "touch" },
+        actions: [
+          { type: "pointerMove", duration: 0, x: from.x, y: from.y },
+          { type: "pointerDown", button: 0 },
+          { type: "pause", duration: 120 },
+          { type: "pointerMove", duration: Math.round(QQ_FARM_BATCH_DRAG_DURATION_SECONDS * 1000), x: to.x, y: to.y },
+          { type: "pointerUp", button: 0 },
+        ],
+      },
+    ]);
+    await browser.releaseActions().catch(() => {});
+  }
+  log(`已拖拽${description}: (${from.x}, ${from.y}) -> (${to.x}, ${to.y})`);
+}
+
+async function dragAlongPoints(browser, points, description) {
+  if (!Array.isArray(points) || points.length < 2) {
+    throw new Error("dragAlongPoints 至少需要两个点");
+  }
+
+  const [firstPoint, ...restPoints] = points;
+  const moveDuration = Math.max(80, Math.round((QQ_FARM_BATCH_DRAG_DURATION_SECONDS * 1000) / restPoints.length));
+  try {
+    await browser.performActions([
+      {
+        type: "pointer",
+        id: "finger1",
+        parameters: { pointerType: "touch" },
+        actions: [
+          { type: "pointerMove", duration: 0, x: firstPoint.x, y: firstPoint.y },
+          { type: "pointerDown", button: 0 },
+          { type: "pause", duration: 120 },
+          ...restPoints.map((point) => ({
+            type: "pointerMove",
+            duration: moveDuration,
+            x: point.x,
+            y: point.y,
+          })),
+          { type: "pointerUp", button: 0 },
+        ],
+      },
+    ]);
+  } catch (error) {
+    await browser.releaseActions().catch(() => {});
+    log(`逐点拖拽${description}失败，回退直线拖拽: ${error.message}`);
+    await dragBetweenPoints(browser, firstPoint, restPoints[restPoints.length - 1], description);
+    return;
+  }
+
+  await browser.releaseActions().catch(() => {});
+  log(`已逐点拖拽${description}: ${points.map((point) => `(${point.x}, ${point.y})`).join(" -> ")}`);
+}
+
 async function hasAnySelector(browser, selectors) {
   for (const selector of selectors) {
     try {
@@ -777,6 +1088,7 @@ async function recognizeTextBlocks(browser) {
   const base64 = await browser.takeScreenshot();
   const buffer = Buffer.from(base64, "base64");
   const png = PNG.sync.read(buffer);
+  const logicalSize = await browser.getWindowSize();
   const filePath = path.join(STATE_DIR, `ios-ocr-${process.pid}-${Date.now()}.png`);
 
   try {
@@ -827,6 +1139,8 @@ async function recognizeTextBlocks(browser) {
       blocks,
       imageWidth: png.width,
       imageHeight: png.height,
+      logicalWidth: logicalSize.width,
+      logicalHeight: logicalSize.height,
     };
   } catch (error) {
     if (!reportedOcrUnavailable) {
@@ -1584,8 +1898,8 @@ async function tapFriendVisitButton(browser) {
   );
 }
 
-async function runPrimaryFarmAction(browser, sourceLabel, repeat = QQ_FARM_PRIMARY_ACTION_REPEAT) {
-  const ocrTapped = await tryTapTextByOcr(browser, QQ_FARM_PRIMARY_ACTION_TEXTS, "QQ农场主操作按钮", {
+async function runPrimaryFarmAction(browser, candidates, sourceLabel, repeat = QQ_FARM_PRIMARY_ACTION_REPEAT) {
+  const ocrTapped = await tryTapTextByOcr(browser, candidates, "QQ农场主操作按钮", {
     minXRatio: 0.22,
     maxXRatio: 0.82,
     minYRatio: 0.48,
@@ -1607,6 +1921,283 @@ async function runPrimaryFarmAction(browser, sourceLabel, repeat = QQ_FARM_PRIMA
     }
   }
   return "point";
+}
+
+async function runOneKeyAction(browser, action, sourceLabel) {
+  return await runPrimaryFarmAction(
+    browser,
+    action.texts?.length ? action.texts : QQ_FARM_PRIMARY_ACTION_TEXTS,
+    sourceLabel,
+  );
+}
+
+async function runOneKeyActionSequence(browser, actions, sourceLabel) {
+  const notes = [];
+  for (const action of actions) {
+    const source = await runOneKeyAction(browser, action, sourceLabel);
+    notes.push(source === "ocr" ? `已通过 OCR 执行${action.note}` : `已按默认热点执行${action.note}`);
+    await sleep(QQ_FARM_PRIMARY_ACTION_DELAY_MS);
+  }
+  return notes;
+}
+
+function findPlotTypeText(ocr, plot) {
+  if (!ocr) {
+    return undefined;
+  }
+
+  const match = findBestOcrBlock(ocr.blocks, QQ_FARM_PLOT_TYPE_TEXTS, {
+    minX: Math.round(ocr.imageWidth * (plot.xRatio - 0.08)),
+    maxX: Math.round(ocr.imageWidth * (plot.xRatio + 0.12)),
+    minY: Math.round(ocr.imageHeight * (plot.yRatio - 0.12)),
+    maxY: Math.round(ocr.imageHeight * (plot.yRatio - 0.02)),
+  });
+  return match?.text?.trim();
+}
+
+async function openSeedChooser(browser, plot, notes, options = {}) {
+  const { recordPlotType = true } = options;
+  await mobileTapPoint(browser, { x: plot.tapX, y: plot.tapY }, "QQ农场空地", "地块识别");
+  await sleep(QQ_FARM_SEED_CHOOSER_DELAY_MS);
+  const ocr = await recognizeTextBlocks(browser);
+  const plotType = findPlotTypeText(ocr, plot);
+  if (plotType && recordPlotType) {
+    notes.push(`地块类型：${plotType}`);
+  }
+  return ocr;
+}
+
+async function waitForStoreScene(browser) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const detection = await recognizeQqFarmScene(browser);
+    if (detection.scene === "store") {
+      return true;
+    }
+    await sleep(400);
+  }
+  return false;
+}
+
+async function closeStoreModal(browser) {
+  await mobileTapPointValue(
+    browser,
+    QQ_FARM_STORE_CLOSE_COORD,
+    "QQ农场商店关闭按钮",
+    process.env.WEIXIN_IOS_QQ_FARM_STORE_CLOSE_COORD?.trim()
+      ? "WEIXIN_IOS_QQ_FARM_STORE_CLOSE_COORD"
+      : "默认 QQ 农场商店关闭坐标",
+  ).catch(() => false);
+  await sleep(800);
+}
+
+async function buyLatestUnlockedSeed(browser, notes) {
+  const openedStore =
+    (await tryTapTextByOcr(browser, ["商店", "商城"], "QQ农场商店入口", {
+      maxXRatio: 0.22,
+      minYRatio: 0.85,
+    })) ||
+    (await mobileTapPointValue(
+      browser,
+      QQ_FARM_STORE_ENTRY_COORD,
+      "QQ农场商店入口",
+      process.env.WEIXIN_IOS_QQ_FARM_STORE_ENTRY_COORD?.trim()
+        ? "WEIXIN_IOS_QQ_FARM_STORE_ENTRY_COORD"
+        : "默认 QQ 农场商店坐标",
+    ));
+  if (!openedStore) {
+    return undefined;
+  }
+
+  if (!(await waitForStoreScene(browser))) {
+    return undefined;
+  }
+
+  const ocr = await recognizeTextBlocks(browser);
+  const seeds = parseQqFarmStoreSeeds(ocr?.blocks ?? [], {
+    minY: ocr ? ocr.imageHeight * 0.12 : undefined,
+    maxY: ocr ? ocr.imageHeight * QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO : undefined,
+  });
+  const summary = describeQqFarmStoreSeeds(seeds);
+  log(`QQ农场商店种子: ${summary}`);
+  notes.push(`商店种子：${summary}`);
+  const latestSeed = pickLatestUnlockedQqFarmStoreSeed(seeds);
+  const latestSeedPoint = storeSeedPointFromOcr(ocr, latestSeed);
+  if (!latestSeed || !latestSeedPoint) {
+    await closeStoreModal(browser);
+    return undefined;
+  }
+
+  await mobileTapPoint(browser, latestSeedPoint, "最新解锁种子", "OCR 货架定位");
+  await sleep(700);
+  const sceneAfterTap = await recognizeQqFarmScene(browser);
+  if (sceneAfterTap.scene !== "store") {
+    notes.push(`已购买最新解锁种子：${latestSeed.label}`);
+    return latestSeed.label;
+  }
+
+  const confirmed = await tryTapTextByOcr(browser, ["确定"], "QQ农场购种确认按钮", {
+    minYRatio: 0.62,
+    maxYRatio: 0.9,
+  });
+  if (!confirmed) {
+    await closeStoreModal(browser);
+    return undefined;
+  }
+
+  await sleep(900);
+  const sceneAfterConfirm = await recognizeQqFarmScene(browser);
+  if (sceneAfterConfirm.scene === "store") {
+    await closeStoreModal(browser);
+  }
+  notes.push(`已购买最新解锁种子：${latestSeed.label}`);
+  return latestSeed.label;
+}
+
+async function resolveSeedChoiceForPlanting(browser, plot, notes, options = {}) {
+  const { recordPlotType = true } = options;
+  let ocr = await openSeedChooser(browser, plot, notes, { recordPlotType });
+  let choice = findAvailableSeedChoice(ocr);
+  if (!choice) {
+    const purchased = await buyLatestUnlockedSeed(browser, notes);
+    if (!purchased) {
+      notes.push("未识别到可购买种子");
+      return undefined;
+    }
+    ocr = await openSeedChooser(browser, plot, notes, { recordPlotType: false });
+    choice = findAvailableSeedChoice(ocr);
+  }
+
+  if (!choice || !ocr) {
+    notes.push("未识别到可用种子库存");
+    return undefined;
+  }
+
+  return {
+    ocr,
+    choice,
+    point: seedChoicePointFromOcr(ocr, choice),
+  };
+}
+
+async function plantSinglePlot(browser, plot, notes, options = {}) {
+  const resolved = await resolveSeedChoiceForPlanting(browser, plot, notes, options);
+  if (!resolved?.point) {
+    return false;
+  }
+
+  notes.push(`已点击下拉种子库存：${resolved.choice.count}`);
+  await mobileTapPoint(browser, resolved.point, "QQ农场种子图标", "OCR 库存定位");
+  await sleep(QQ_FARM_SINGLE_PLANT_DELAY_MS);
+  return true;
+}
+
+async function plantEmptyPlots(browser) {
+  const notes = [];
+  const initialPlots = await detectQqFarmPlots(browser);
+  notes.push(describeQqFarmPlots(initialPlots));
+
+  const emptyPlots = initialPlots.filter((plot) => plot.state === "empty");
+  if (emptyPlots.length === 0) {
+    return { notes };
+  }
+
+  const groupedRows = new Map();
+  for (const plot of emptyPlots) {
+    const rowPlots = groupedRows.get(plot.screenRow) ?? [];
+    rowPlots.push(plot);
+    groupedRows.set(plot.screenRow, rowPlots);
+  }
+
+  let batchRows = 0;
+  let plantedByBatch = 0;
+  let recordedPlotType = false;
+  const groupedPlots = [...groupedRows.values()].sort((left, right) =>
+    compareQqFarmPlotsTopRightFirst(
+      [...left].sort(compareQqFarmPlotsTopRightFirst)[0],
+      [...right].sort(compareQqFarmPlotsTopRightFirst)[0],
+    ),
+  );
+  for (const plots of groupedPlots) {
+    const sorted = [...plots].sort(compareQqFarmPlotsTopRightFirst);
+    if (sorted.length < QQ_FARM_BATCH_MIN_PLOTS) {
+      continue;
+    }
+    const resolved = await resolveSeedChoiceForPlanting(browser, sorted[0], notes, { recordPlotType: !recordedPlotType });
+    if (!resolved?.point) {
+      break;
+    }
+    recordedPlotType = true;
+    if (batchRows === 0) {
+      notes.push(`已按住种子库存：${resolved.choice.count}`);
+    }
+    const beforeCount = (await detectQqFarmPlots(browser)).filter((plot) => plot.state === "empty").length;
+    await dragAlongPoints(
+      browser,
+      [resolved.point, ...sorted.map((plot) => ({ x: plot.tapX, y: plot.tapY }))],
+      "QQ农场批量播种",
+    );
+    await sleep(QQ_FARM_POST_PLANT_DELAY_MS);
+    const afterCount = (await detectQqFarmPlots(browser)).filter((plot) => plot.state === "empty").length;
+    if (afterCount < beforeCount) {
+      batchRows += 1;
+      plantedByBatch += beforeCount - afterCount;
+    }
+  }
+  if (batchRows > 0) {
+    notes.push(`已批量拖拽播种 ${plantedByBatch} 块（${batchRows} 次）`);
+  }
+
+  let remainingPlots = (await detectQqFarmPlots(browser))
+    .filter((plot) => plot.state === "empty")
+    .sort(compareQqFarmPlotsTopRightFirst);
+  if (remainingPlots.length === 0) {
+    return { notes };
+  }
+
+  let plantedSingles = 0;
+  recordedPlotType = recordedPlotType || notes.some((note) => note.startsWith("地块类型："));
+  for (const plot of remainingPlots) {
+    const planted = await plantSinglePlot(browser, plot, notes, { recordPlotType: !recordedPlotType });
+    if (!planted) {
+      break;
+    }
+    recordedPlotType = true;
+    plantedSingles += 1;
+  }
+  if (plantedSingles > 0) {
+    notes.push(`已单块补种 ${plantedSingles} 块`);
+  }
+
+  remainingPlots = (await detectQqFarmPlots(browser))
+    .filter((plot) => plot.state === "empty")
+    .sort(compareQqFarmPlotsTopRightFirst);
+  if (remainingPlots.length > 0) {
+    notes.push(`剩余空地 ${remainingPlots.length} 块`);
+  }
+
+  return { notes };
+}
+
+async function runPlantingModule(browser) {
+  return await plantEmptyPlots(browser);
+}
+
+async function runHomeModules(browser) {
+  const modules = [
+    {
+      id: "planting",
+      name: "播种模块",
+      run: runPlantingModule,
+    },
+  ];
+
+  const notes = [];
+  for (const module of modules) {
+    notes.push(`开始执行${module.name}`);
+    const result = await module.run(browser);
+    notes.push(...(result?.notes || []));
+  }
+  return notes;
 }
 
 async function runDefaultQqFarmRoutine(browser) {
@@ -1633,14 +2224,18 @@ async function runDefaultQqFarmRoutine(browser) {
     notes.push(`当前场景为 ${initialScene}，已继续按兜底流程处理`);
   }
 
-  const homeActionSource = await runPrimaryFarmAction(
-    browser,
-    process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
-      ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
-      : "默认 QQ 农场一键操作坐标",
+  notes.push(
+    ...await runOneKeyActionSequence(
+      browser,
+      QQ_FARM_HOME_ONE_KEY_ACTIONS,
+      process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
+        ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
+        : "默认 QQ 农场一键操作坐标",
+    ),
   );
-  notes.push(homeActionSource === "ocr" ? "已通过 OCR 触发自家农场操作" : "已按默认热点执行自家农场操作");
-  await sleep(1_000);
+
+  notes.push(...await runHomeModules(browser));
+  await ensureQqFarmHomeScene(browser);
 
   const openedFriendList =
     (await tryTapTextByOcr(browser, QQ_FARM_FRIEND_ENTRY_TEXTS, "QQ农场好友入口", {
@@ -1700,13 +2295,15 @@ async function runDefaultQqFarmRoutine(browser) {
   }
   notes.push("已拜访好友农场");
 
-  const friendActionSource = await runPrimaryFarmAction(
-    browser,
-    process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
-      ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
-      : "默认 QQ 农场一键操作坐标",
+  notes.push(
+    ...await runOneKeyActionSequence(
+      browser,
+      QQ_FARM_FRIEND_ONE_KEY_ACTIONS,
+      process.env.WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD?.trim()
+        ? "WEIXIN_IOS_QQ_FARM_PRIMARY_ACTION_COORD"
+        : "默认 QQ 农场一键操作坐标",
+    ),
   );
-  notes.push(friendActionSource === "ocr" ? "已通过 OCR 触发好友农场操作" : "已按默认热点执行好友农场操作");
 
   const returnedHomeScene = await ensureQqFarmHomeScene(browser);
   if (returnedHomeScene === "home") {

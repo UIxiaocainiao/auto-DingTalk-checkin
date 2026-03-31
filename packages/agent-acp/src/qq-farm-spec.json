@@ -22,7 +22,18 @@
     "returnHomeTexts": ["回家"],
     "storeEntryTexts": ["商店", "商城"],
     "rewardEntryTexts": ["好友求助", "奖励"],
-    "primaryActionTexts": ["一键采摘", "一键收获", "一键偷取", "一键偷菜", "一键除草", "一键除虫", "收获", "偷取", "偷菜", "除草", "除虫"],
+    "primaryActionTexts": ["一键采摘", "一键收获", "一键偷取", "一键偷菜", "一键除草", "一键除虫", "一键播种", "收获", "偷取", "偷菜", "除草", "除虫", "播种"],
+    "homeOneKeyActions": [
+      { "id": "harvest", "note": "一键收获", "texts": ["一键采摘", "一键收获", "收获"] },
+      { "id": "weed", "note": "一键除草", "texts": ["一键除草", "除草"] },
+      { "id": "pest", "note": "一键除虫", "texts": ["一键除虫", "除虫"] },
+      { "id": "sow", "note": "一键播种", "texts": ["一键播种", "播种"] }
+    ],
+    "friendOneKeyActions": [
+      { "id": "steal", "note": "一键偷取", "texts": ["一键偷取", "一键偷菜", "偷取", "偷菜", "一键采摘", "一键收获", "收获"] },
+      { "id": "weed", "note": "一键除草", "texts": ["一键除草", "除草"] },
+      { "id": "pest", "note": "一键除虫", "texts": ["一键除虫", "除虫"] }
+    ],
     "friendTabTexts": {
       "samePlay": ["同玩好友"],
       "wechat": ["微信好友"],

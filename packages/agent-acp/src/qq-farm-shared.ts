@@ -14,6 +14,8 @@ type QqFarmSpec = {
   openTexts: string[];
   scenes: Record<string, QqFarmSceneDefinition>;
   actions: {
+    homeOneKeyActions?: QqFarmOneKeyAction[];
+    friendOneKeyActions?: QqFarmOneKeyAction[];
     friendEntryTexts: string[];
     friendVisitTexts: string[];
     returnHomeTexts: string[];
@@ -23,6 +25,12 @@ type QqFarmSpec = {
     friendTabTexts: Record<string, string[]>;
     storeTabTexts: Record<string, string[]>;
   };
+};
+
+export type QqFarmOneKeyAction = {
+  id: string;
+  note: string;
+  texts: string[];
 };
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -67,6 +75,14 @@ export const QQ_FARM_RETURN_HOME_TEXTS = uniqueTexts(QQ_FARM_SPEC.actions.return
 export const QQ_FARM_STORE_ENTRY_TEXTS = uniqueTexts(QQ_FARM_SPEC.actions.storeEntryTexts);
 export const QQ_FARM_REWARD_ENTRY_TEXTS = uniqueTexts(QQ_FARM_SPEC.actions.rewardEntryTexts);
 export const QQ_FARM_PRIMARY_ACTION_TEXTS = uniqueTexts(QQ_FARM_SPEC.actions.primaryActionTexts);
+export const QQ_FARM_HOME_ONE_KEY_ACTIONS = (QQ_FARM_SPEC.actions.homeOneKeyActions ?? []).map((action) => ({
+  ...action,
+  texts: uniqueTexts(action.texts),
+}));
+export const QQ_FARM_FRIEND_ONE_KEY_ACTIONS = (QQ_FARM_SPEC.actions.friendOneKeyActions ?? []).map((action) => ({
+  ...action,
+  texts: uniqueTexts(action.texts),
+}));
 export const QQ_FARM_FRIEND_TAB_TEXTS = QQ_FARM_SPEC.actions.friendTabTexts;
 export const QQ_FARM_STORE_TAB_TEXTS = QQ_FARM_SPEC.actions.storeTabTexts;
 

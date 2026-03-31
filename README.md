@@ -44,6 +44,65 @@ corepack enable
 corepack pnpm install
 ```
 
+### 启动整个项目
+
+整个 monorepo 没有根目录统一的 `pnpm start`。实际启动入口是 `weixin-acp` 这个包：
+
+```bash
+corepack pnpm --filter weixin-acp start -- -- codex-acp
+```
+
+如果你要接别的 Agent，把最后的 `codex-acp` 换成你自己的 ACP 命令即可，例如：
+
+```bash
+corepack pnpm --filter weixin-acp start -- -- claude-agent-acp
+corepack pnpm --filter weixin-acp start -- -- kimi acp
+corepack pnpm --filter weixin-acp start -- -- node ./my-agent.js
+```
+
+说明：
+
+- 首次启动或会话失效时，会在启动过程中要求重新扫码登录微信。
+- Android 直接执行上面的命令即可。
+- iPhone 需要先在另一个终端启动 Appium：
+
+```bash
+corepack pnpm ios:appium
+```
+
+如果你使用的是已发布 CLI，对应命令是：
+
+```bash
+npx weixin-acp start -- codex-acp
+```
+
+### 一键提交最新代码到 GitHub
+
+仓库根目录已经内置了一条一键同步脚本：
+
+```bash
+corepack pnpm git:sync
+```
+
+默认行为：
+
+- 自动执行 `git add -A`
+- 如果检测到新变更，自动生成提交信息并提交
+- 将当前分支推送到 `origin`
+- 不会执行强推
+
+如果你想自己指定提交信息：
+
+```bash
+corepack pnpm git:sync -- "feat: update qq farm store module"
+```
+
+如果你想显式推送到指定分支，例如 `main`：
+
+```bash
+GIT_SYNC_BRANCH=main corepack pnpm git:sync -- "chore: sync latest changes"
+```
+
 ### 可选：安装 OCR 回退
 
 为减少因不同分辨率、WebView、自绘控件导致的定位失败，仓库支持通过 PaddleOCR 做文字识别回退，优先用于：
