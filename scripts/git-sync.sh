@@ -18,6 +18,10 @@ if [[ -z "$branch" ]]; then
   exit 1
 fi
 
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+
 message="${*:-${GIT_SYNC_MESSAGE:-}}"
 if [[ -z "$message" ]]; then
   timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
