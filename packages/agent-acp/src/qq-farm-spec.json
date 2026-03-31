@@ -1,0 +1,38 @@
+{
+  "queryCandidates": ["QQ经典农场", "QQ农场", "经典农场"],
+  "searchResultTexts": ["QQ经典农场", "QQ农场", "经典农场", "小游戏", "最近玩过"],
+  "openTexts": ["前往", "进入", "游戏入口"],
+  "scenes": {
+    "home": {
+      "groups": [["仓库"], ["商店", "商城"], ["好友", "好友求助"]]
+    },
+    "friends": {
+      "groups": [["好友"], ["拜访", "同玩好友", "微信好友", "邀请", "访客"]]
+    },
+    "store": {
+      "groups": [["商店"], ["种子", "宠物", "装扮"]]
+    },
+    "friend-farm": {
+      "groups": [["回家"], ["访客", "劳动光荣"]]
+    }
+  },
+  "actions": {
+    "friendEntryTexts": ["好友"],
+    "friendVisitTexts": ["拜访"],
+    "returnHomeTexts": ["回家"],
+    "storeEntryTexts": ["商店", "商城"],
+    "rewardEntryTexts": ["好友求助", "奖励"],
+    "primaryActionTexts": ["一键采摘", "一键收获", "一键偷取", "一键偷菜", "一键除草", "一键除虫", "收获", "偷取", "偷菜", "除草", "除虫"],
+    "friendTabTexts": {
+      "samePlay": ["同玩好友"],
+      "wechat": ["微信好友"],
+      "invite": ["邀请"],
+      "visitors": ["访客"]
+    },
+    "storeTabTexts": {
+      "seed": ["种子"],
+      "pet": ["宠物"],
+      "dress": ["装扮"]
+    }
+  }
+}
