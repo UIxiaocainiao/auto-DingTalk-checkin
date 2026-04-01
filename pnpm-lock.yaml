@@ -18,6 +18,8 @@ importers:
         specifier: ^9.27.0
         version: 9.27.0
 
+  dingtalk-clock-in: {}
+
   packages/agent-acp:
     dependencies:
       '@agentclientprotocol/sdk':
@@ -89,6 +91,16 @@ importers:
       typescript:
         specifier: ^5.8.0
         version: 5.9.3
+
+  qq-classic-farm:
+    dependencies:
+      pngjs:
+        specifier: ^7.0.0
+        version: 7.0.0
+    devDependencies:
+      '@types/pngjs':
+        specifier: ^6.0.5
+        version: 6.0.5
 
 packages:
 

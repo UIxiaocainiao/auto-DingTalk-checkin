@@ -1,0 +1,18 @@
+{
+  "name": "qq-classic-farm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "vision:omniparser": "bash ./scripts/start-omniparser-bridge.sh",
+    "vision:moondream": "bash ./scripts/start-moondream-station.sh",
+    "vision:doctor": "bash ./scripts/vision-doctor.sh",
+    "vision:controller": "bash ./scripts/run-android-vision-controller.sh",
+    "record:manual": "bash ./scripts/run-android-manual-recorder.sh"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/pngjs": "^6.0.5"
+  }
+}

@@ -8,27 +8,51 @@ import { PNG } from "pngjs";
 
 import type { Agent, ChatRequest, ChatResponse } from "weixin-agent-sdk";
 
-import { CLOCK_IN_SLOTS, resolveActiveClockInSlot, type ClockInSlotConfig, type ClockInSlotId } from "./clock-in-config.js";
-import { findOcrTextBlock, recognizeTextBlocks } from "./ocr-fallback.js";
+import {
+  CLOCK_IN_SLOTS,
+  resolveActiveClockInSlot,
+  type ClockInSlotConfig,
+  type ClockInSlotId,
+} from "../../../dingtalk-clock-in/src/clock-in-config.js";
+import { findOcrTextBlock, normalizeOcrText, recognizeTextBlocks, type OcrTextBlock } from "./ocr-fallback.js";
 import {
   QQ_FARM_FRIEND_ONE_KEY_ACTIONS,
   QQ_FARM_FRIEND_ENTRY_TEXTS,
+  QQ_FARM_FRIEND_HELP_TEXTS,
+  QQ_FARM_FRIEND_TAB_TEXTS,
   QQ_FARM_FRIEND_VISIT_TEXTS,
   QQ_FARM_HOME_ONE_KEY_ACTIONS,
+  QQ_FARM_MALL_ENTRY_TEXTS,
+  QQ_FARM_MALL_FERTILIZER_TEXTS,
   QQ_FARM_OPEN_TEXTS,
   QQ_FARM_PRIMARY_ACTION_TEXTS,
+  QQ_FARM_PURCHASE_CONFIRM_TEXTS,
   QQ_FARM_RETURN_HOME_TEXTS,
+  QQ_FARM_STORE_ENTRY_TEXTS,
+  QQ_FARM_WAREHOUSE_ENTRY_TEXTS,
+  QQ_FARM_WAREHOUSE_SELL_TEXTS,
   buildQqFarmQueryCandidates,
   buildQqFarmResultTexts,
   detectQqFarmScene,
   type QqFarmOneKeyAction,
   type QqFarmSceneId,
-} from "./qq-farm-shared.js";
+} from "../../../qq-classic-farm/src/qq-farm-shared.js";
 import {
   describeQqFarmStoreSeeds,
   parseQqFarmStoreSeeds,
   pickLatestUnlockedQqFarmStoreSeed,
-} from "./qq-farm-store.js";
+} from "../../../qq-classic-farm/src/qq-farm-store.js";
+import {
+  detectBestQqFarmTemplateMatch,
+  detectQqFarmTemplateMatches,
+  listQqFarmTemplateNames,
+  type QqFarmTemplateMatchOptions,
+} from "../../../qq-classic-farm/src/qq-farm-template-fallback.js";
+import { detectQqFarmVisualSnapshot } from "../../../qq-classic-farm/src/qq-farm-vision.js";
+import {
+  classifyQqFarmSceneWithSidecars,
+  locateQqFarmUiPointWithSidecars,
+} from "../../../qq-classic-farm/src/qq-farm-vision-sidecars.js";
 
 type PointRatio = {
   xRatio: number;
@@ -71,6 +95,16 @@ type QqFarmHomeModule = {
   run: (deviceId: string) => Promise<QqFarmHomeModuleResult>;
 };
 
+type QqFarmFriendModuleResult = {
+  notes: string[];
+};
+
+type QqFarmFriendModule = {
+  id: string;
+  name: string;
+  run: (deviceId: string) => Promise<QqFarmFriendModuleResult>;
+};
+
 type QqFarmBatchFamily = "screenRow" | "row" | "column";
 
 type QqFarmBatchCandidate = {
@@ -78,6 +112,20 @@ type QqFarmBatchCandidate = {
   key: number;
   plots: QqFarmPlot[];
 };
+
+type QqFarmFriendVisitTarget = {
+  point: {
+    x: number;
+    y: number;
+  };
+  alternatePoint?: {
+    x: number;
+    y: number;
+  };
+  note: string;
+};
+
+type QqFarmFriendCarouselDirection = "left" | "right";
 
 type QqFarmSeedChoiceOptions = {
   recordPlotType?: boolean;
@@ -117,6 +165,11 @@ function resolvePointRatioEnv(envName: string, fallback: PointRatio): PointRatio
 
 function resolveOptionalPointRatioEnv(envName: string): PointRatio | undefined {
   return parsePointRatio(process.env[envName], envName);
+}
+
+function parsePositiveIntegerEnv(rawValue: string | undefined, fallback: number): number {
+  const value = Number.parseInt(rawValue ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 const DINGTALK_PACKAGE = "com.alibaba.android.rimet";
@@ -175,7 +228,36 @@ const QQ_FARM_ONE_KEY_HARVEST_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FA
 const QQ_FARM_FRIEND_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_ENTRY_COORD", { xRatio: 0.96457, yRatio: 0.94094 });
 const QQ_FARM_FRIEND_FIRST_VISIT_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_FIRST_VISIT_COORD", { xRatio: 0.63386, yRatio: 0.30955 });
 const QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_FRIEND_ONE_KEY_STEAL_COORD", { xRatio: 0.49705, yRatio: 0.73819 });
+const QQ_FARM_FRIEND_CAROUSEL_LEFT_SWIPE_FROM_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_LEFT_SWIPE_FROM_COORD",
+  { xRatio: 0.74, yRatio: 0.901 },
+);
+const QQ_FARM_FRIEND_CAROUSEL_LEFT_SWIPE_TO_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_LEFT_SWIPE_TO_COORD",
+  { xRatio: 0.28, yRatio: 0.901 },
+);
+const QQ_FARM_FRIEND_CAROUSEL_RIGHT_SWIPE_FROM_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_RIGHT_SWIPE_FROM_COORD",
+  { xRatio: 0.28, yRatio: 0.901 },
+);
+const QQ_FARM_FRIEND_CAROUSEL_RIGHT_SWIPE_TO_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_RIGHT_SWIPE_TO_COORD",
+  { xRatio: 0.74, yRatio: 0.901 },
+);
+const QQ_FARM_FRIEND_CAROUSEL_LEFT_TAP_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_LEFT_TAP_COORD",
+  { xRatio: 0.3, yRatio: 0.885 },
+);
+const QQ_FARM_FRIEND_CAROUSEL_RIGHT_TAP_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_FRIEND_CAROUSEL_RIGHT_TAP_COORD",
+  { xRatio: 0.7, yRatio: 0.885 },
+);
 const QQ_FARM_STORE_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_STORE_ENTRY_COORD", { xRatio: 0.10533, yRatio: 0.963 });
+const QQ_FARM_MALL_ENTRY_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_MALL_ENTRY_COORD", { xRatio: 0.966, yRatio: 0.151 });
+const QQ_FARM_MALL_ORGANIC_FERTILIZER_POINT = resolvePointRatioEnv(
+  "WEIXIN_ANDROID_QQ_FARM_MALL_ORGANIC_FERTILIZER_COORD",
+  { xRatio: 0.421, yRatio: 0.612 },
+);
 const QQ_FARM_STORE_CLOSE_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_STORE_CLOSE_COORD", { xRatio: 0.66767, yRatio: 0.0725 });
 const QQ_FARM_PLOT_TOP_POINT = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_PLOT_TOP_COORD", { xRatio: 0.53867, yRatio: 0.516 });
 const QQ_FARM_PLOT_DOWN_LEFT_VECTOR = resolvePointRatioEnv("WEIXIN_ANDROID_QQ_FARM_PLOT_DOWN_LEFT_VECTOR", { xRatio: -0.03067, yRatio: 0.0235 });
@@ -223,9 +305,27 @@ const QQ_FARM_PLOT_TYPE_TEXTS = ["黑土地", "红土地", "金土地", "紫土�
 const QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO = Number.parseFloat(
   process.env.WEIXIN_ANDROID_QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO ?? "0.84",
 );
+const QQ_FARM_SHOP_TEMPLATE_CANDIDATES = listQqFarmTemplateNames("shop_");
+const QQ_FARM_FRIEND_VISIT_TEMPLATE_CANDIDATES = listQqFarmTemplateNames("btn_visit");
 const QQ_FARM_STEAL_RUN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_STEAL_RUN_DELAY_MS ?? "4000", 10);
 const QQ_FARM_POST_OPEN_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_POST_OPEN_DELAY_MS ?? "2500", 10);
+const QQ_FARM_STARTUP_PAGE_TIMEOUT_MS = parsePositiveIntegerEnv(
+  process.env.WEIXIN_QQ_FARM_STARTUP_PAGE_TIMEOUT_MS,
+  10_000,
+);
+const QQ_FARM_STARTUP_PAGE_REENTER_ATTEMPTS = parsePositiveIntegerEnv(
+  process.env.WEIXIN_QQ_FARM_STARTUP_PAGE_REENTER_ATTEMPTS,
+  1,
+);
 const QQ_FARM_FRIEND_PAGE_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_FRIEND_PAGE_DELAY_MS ?? "2500", 10);
+const QQ_FARM_FRIEND_CAROUSEL_DELAY_MS = Number.parseInt(process.env.WEIXIN_QQ_FARM_FRIEND_CAROUSEL_DELAY_MS ?? "1400", 10);
+const QQ_FARM_RETRY_ATTEMPTS = parsePositiveIntegerEnv(process.env.WEIXIN_QQ_FARM_RETRY_ATTEMPTS, 2);
+const QQ_FARM_RETRY_DELAY_MS = parsePositiveIntegerEnv(process.env.WEIXIN_QQ_FARM_RETRY_DELAY_MS, 3_000);
+const QQ_FARM_ATTEMPT_TIMEOUT_MS = parsePositiveIntegerEnv(process.env.WEIXIN_QQ_FARM_ATTEMPT_TIMEOUT_MS, 120_000);
+const QQ_FARM_FRIEND_CAROUSEL_DIRECTIONS = (process.env.WEIXIN_QQ_FARM_FRIEND_CAROUSEL_DIRECTIONS ?? "left,right")
+  .split(",")
+  .map((value) => value.trim().toLowerCase())
+  .filter((value): value is QqFarmFriendCarouselDirection => value === "left" || value === "right");
 const DEFAULT_IOS_QQ_FARM_RESULT_COORD = JSON.stringify({ xRatio: 0.5, yRatio: 0.24 });
 const IOS_QQ_FARM_RESULT_COORD =
   process.env.WEIXIN_IOS_QQ_FARM_RESULT_COORD?.trim() || DEFAULT_IOS_QQ_FARM_RESULT_COORD;
@@ -244,6 +344,51 @@ const CLEAR_ANDROID_RECENT_APPS_AFTER_CLOCK_IN = resolveBooleanEnv(
   ],
   true,
 );
+const CLEAR_ANDROID_WECHAT_AFTER_QQ_FARM = resolveBooleanEnv(
+  [
+    process.env.WEIXIN_ANDROID_CLEAR_WECHAT_AFTER_QQ_FARM,
+    process.env.WEIXIN_CLEAR_WECHAT_AFTER_QQ_FARM,
+  ],
+  true,
+);
+const CLEAR_ANDROID_RECENT_APPS_AFTER_QQ_FARM = resolveBooleanEnv(
+  [
+    process.env.WEIXIN_ANDROID_CLEAR_RECENT_APPS_AFTER_QQ_FARM,
+    process.env.WEIXIN_CLEAR_RECENT_APPS_AFTER_QQ_FARM,
+  ],
+  true,
+);
+const ANDROID_QQ_FARM_VISION_CONTROLLER_SCRIPT_PATH = path.resolve(
+  process.cwd(),
+  "../../qq-classic-farm/scripts/run-android-vision-controller.sh",
+);
+const QQ_FARM_VISION_CONTROLLER_TIMEOUT_MS = Number.parseInt(
+  process.env.WEIXIN_QQ_FARM_VISION_CONTROLLER_TIMEOUT_MS ?? "60000",
+  10,
+);
+
+type QqFarmVisionControllerMode = "off" | "auto" | "on";
+
+function normalizeQqFarmVisionControllerMode(value: string | undefined): QqFarmVisionControllerMode {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return "auto";
+  }
+  if (normalized === "off" || normalized === "0" || normalized === "false") {
+    return "off";
+  }
+  if (normalized === "on" || normalized === "1" || normalized === "true") {
+    return "on";
+  }
+  throw new Error(
+    `不支持的 WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_MODE=${value}，请使用 off、auto 或 on`,
+  );
+}
+
+const ANDROID_QQ_FARM_VISION_CONTROLLER_MODE = normalizeQqFarmVisionControllerMode(
+  process.env.WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_MODE ??
+    process.env.WEIXIN_QQ_FARM_ANDROID_ENGINE,
+);
 
 function buildDefaultIosAutomationCommand(action: string): string | undefined {
   if (!existsSync(IOS_AUTOMATION_SCRIPT_PATH)) {
@@ -251,6 +396,17 @@ function buildDefaultIosAutomationCommand(action: string): string | undefined {
   }
   return `node ${JSON.stringify(IOS_AUTOMATION_SCRIPT_PATH)} ${action}`;
 }
+
+function buildDefaultAndroidQqFarmVisionControllerCommand(): string | undefined {
+  if (!existsSync(ANDROID_QQ_FARM_VISION_CONTROLLER_SCRIPT_PATH)) {
+    return undefined;
+  }
+  return `bash ${JSON.stringify(ANDROID_QQ_FARM_VISION_CONTROLLER_SCRIPT_PATH)}`;
+}
+
+const ANDROID_QQ_FARM_VISION_CONTROLLER_COMMAND =
+  process.env.WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_COMMAND?.trim() ??
+  buildDefaultAndroidQqFarmVisionControllerCommand();
 
 const IOS_DINGTALK_CLOCK_IN_COMMAND =
   process.env.WEIXIN_IOS_DINGTALK_CLOCK_IN_COMMAND?.trim() ??
@@ -286,6 +442,20 @@ type ConnectedDevice = {
 
 type LocalCommandState = {
   fastClockVerifiedAt?: string;
+};
+
+type QqFarmVisionControllerPhase = "home" | "friends";
+
+type QqFarmVisionControllerResult = {
+  ok: boolean;
+  phase: QqFarmVisionControllerPhase;
+  notes?: string[];
+  completed_home_one_key_actions?: boolean;
+  completed_friend_flow?: boolean;
+  final_scene?: string;
+  run_dir?: string;
+  reason?: string;
+  unsupported?: boolean;
 };
 
 type XcDeviceEntry = {
@@ -354,6 +524,7 @@ async function runCommand(
   opts?: {
     allowNonZero?: boolean;
     env?: Record<string, string>;
+    timeoutMs?: number;
   },
 ): Promise<CommandResult> {
   return await new Promise((resolve, reject) => {
@@ -364,6 +535,7 @@ async function runCommand(
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
 
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -372,11 +544,43 @@ async function runCommand(
       stderr += chunk.toString();
     });
 
+    const timeout =
+      typeof opts?.timeoutMs === "number" && opts.timeoutMs > 0
+        ? setTimeout(() => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // ignore kill failures
+            }
+            reject(new Error(`${commandString(command, args)} timed out after ${opts.timeoutMs}ms`));
+          }, opts.timeoutMs)
+        : undefined;
+
+    const clearCommandTimeout = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    };
+
     child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearCommandTimeout();
       reject(error);
     });
 
     child.on("close", (exitCode) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearCommandTimeout();
       const code = exitCode ?? -1;
       if (code !== 0 && !opts?.allowNonZero) {
         const details = stderr.trim() || stdout.trim() || `exit code ${code}`;
@@ -430,6 +634,7 @@ async function runShellCommand(
   opts?: {
     allowNonZero?: boolean;
     env?: Record<string, string>;
+    timeoutMs?: number;
   },
 ): Promise<CommandResult> {
   return await runCommand(process.env.SHELL || "zsh", ["-lc", command], opts);
@@ -805,11 +1010,6 @@ async function resolveConnectedDevice(): Promise<ConnectedDevice> {
   });
   const iosDevices = await listIosDevices();
 
-  if (androidDevices.length > 0 && iosDevices.length > 0) {
-    throw new Error(
-      "同时检测到 Android 和 iOS 设备，请设置 WEIXIN_DEVICE_PLATFORM=android 或 WEIXIN_DEVICE_PLATFORM=ios",
-    );
-  }
   if (androidDevices.length > 0) {
     return androidDevices[0];
   }
@@ -1761,6 +1961,12 @@ async function exitDingTalk(deviceId: string): Promise<void> {
   await adb(deviceId, ["shell", "am", "force-stop", DINGTALK_PACKAGE]);
 }
 
+async function exitWeChat(deviceId: string): Promise<void> {
+  await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_HOME"]);
+  await sleep(500);
+  await adb(deviceId, ["shell", "am", "force-stop", WECHAT_PACKAGE]);
+}
+
 async function clearRecentApps(deviceId: string): Promise<{ cleared: boolean }> {
   await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_APP_SWITCH"]);
   await sleep(1200);
@@ -1776,6 +1982,23 @@ async function clearRecentApps(deviceId: string): Promise<{ cleared: boolean }> 
   await sleep(800);
   await adb(deviceId, ["shell", "input", "keyevent", "KEYCODE_HOME"]);
   return { cleared: true };
+}
+
+async function cleanupAndroidWeChatAfterQqFarm(deviceId: string): Promise<string> {
+  if (!CLEAR_ANDROID_WECHAT_AFTER_QQ_FARM) {
+    return "已保留微信前台状态";
+  }
+
+  await exitWeChat(deviceId);
+  if (!CLEAR_ANDROID_RECENT_APPS_AFTER_QQ_FARM) {
+    return "已在后台关闭微信";
+  }
+
+  const clearResult = await clearRecentApps(deviceId);
+  if (clearResult.cleared) {
+    return "已在后台关闭微信并清理后台任务";
+  }
+  return "已在后台关闭微信，未找到“清除全部”，已跳过后台清理";
 }
 
 async function readTopResumedActivity(deviceId: string): Promise<string | undefined> {
@@ -1816,11 +2039,36 @@ function isWeChatAppBrandActivity(activity: string | undefined): boolean {
   );
 }
 
+async function ensureQqFarmForegroundOnAndroid(deviceId: string, reason: string): Promise<void> {
+  const topActivity = await readTopResumedActivity(deviceId);
+  if (isWeChatAppBrandActivity(topActivity)) {
+    return;
+  }
+
+  throw new Error(`QQ经典农场流程中断：${reason}，当前前台 Activity: ${topActivity ?? "unknown"}`);
+}
+
+function isWeChatTransitionActivity(activity: string | undefined): boolean {
+  if (!activity) {
+    return false;
+  }
+
+  return activity.includes(`${WECHAT_PACKAGE}/.ui.EmptyActivity`);
+}
+
 async function waitForWeChatAppBrand(deviceId: string): Promise<string | undefined> {
-  return await waitForTopResumedActivity(
-    deviceId,
-    (activity) => isWeChatAppBrandActivity(activity),
-  );
+  let lastActivity: string | undefined;
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    lastActivity = await readTopResumedActivity(deviceId);
+    if (isWeChatAppBrandActivity(lastActivity)) {
+      return lastActivity;
+    }
+
+    // WeChat often parks the launch flow on EmptyActivity before AppBrandUI lands.
+    await sleep(isWeChatTransitionActivity(lastActivity) ? 1_200 : 800);
+  }
+
+  return lastActivity;
 }
 
 function isWeChatSearchResultsActivity(activity: string | undefined): boolean {
@@ -1906,10 +2154,17 @@ async function tapCurrentScreenPoint(
   point: PointRatio,
   description: string,
 ): Promise<void> {
-  const screenshot = PNG.sync.read(await captureScreen(deviceId));
-  const center = pointFromRatio(screenshot.width, screenshot.height, point);
+  const center = await resolveCurrentScreenPoint(deviceId, point);
   log(description);
   await tap(deviceId, center.x, center.y);
+}
+
+async function resolveCurrentScreenPoint(
+  deviceId: string,
+  point: PointRatio,
+): Promise<{ x: number; y: number }> {
+  const screenshot = PNG.sync.read(await captureScreen(deviceId));
+  return pointFromRatio(screenshot.width, screenshot.height, point);
 }
 
 function findGreenButtonCentersFromPng(png: PNG): Array<{
@@ -2003,13 +2258,260 @@ function findGreenButtonCentersFromPng(png: PNG): Array<{
   return centers;
 }
 
-async function detectAndroidFriendVisitButtons(deviceId: string): Promise<Array<{ x: number; y: number; pixelCount: number }>> {
-  const png = PNG.sync.read(await captureScreen(deviceId));
-  return findGreenButtonCentersFromPng(png).map((center) => ({
-    pixelCount: center.pixelCount,
+function findMatchingOcrTextBlocks(
+  blocks: OcrTextBlock[],
+  candidates: string[],
+  opts?: {
+    minX?: number;
+    maxX?: number;
+    minY?: number;
+    maxY?: number;
+  },
+): OcrTextBlock[] {
+  const normalizedCandidates = candidates.map((candidate) => normalizeOcrText(candidate)).filter(Boolean);
+  if (normalizedCandidates.length === 0) {
+    return [];
+  }
+
+  const matchesCandidate = (normalizedBlock: string): boolean =>
+    normalizedCandidates.some(
+      (candidate) =>
+        normalizedBlock === candidate ||
+        normalizedBlock.includes(candidate) ||
+        (normalizedBlock.length >= 3 && candidate.includes(normalizedBlock)),
+    );
+
+  return blocks
+    .filter((block) => {
+      if (typeof opts?.minX === "number" && block.centerX < opts.minX) return false;
+      if (typeof opts?.maxX === "number" && block.centerX > opts.maxX) return false;
+      if (typeof opts?.minY === "number" && block.centerY < opts.minY) return false;
+      if (typeof opts?.maxY === "number" && block.centerY > opts.maxY) return false;
+
+      const normalizedBlock = normalizeOcrText(block.text);
+      if (!normalizedBlock) {
+        return false;
+      }
+      return matchesCandidate(normalizedBlock);
+    })
+    .sort((left, right) => left.centerY - right.centerY || left.centerX - right.centerX);
+}
+
+function pickClosestFriendRowTarget<T extends { x: number; y: number }>(
+  candidates: T[],
+  anchor: { x: number; y: number },
+  maxRowGap: number,
+  requireRightSide = false,
+): T | undefined {
+  return [...candidates]
+    .filter((candidate) => Math.abs(candidate.y - anchor.y) <= maxRowGap)
+    .filter((candidate) => !requireRightSide || candidate.x >= anchor.x - maxRowGap)
+    .sort((left, right) => {
+      const leftDistance = Math.abs(left.y - anchor.y) * 4 + Math.abs(left.x - anchor.x);
+      const rightDistance = Math.abs(right.y - anchor.y) * 4 + Math.abs(right.x - anchor.x);
+      return leftDistance - rightDistance;
+    })[0];
+}
+
+const QQ_FARM_FRIEND_LIST_TAB_TEXTS = [...new Set(Object.values(QQ_FARM_FRIEND_TAB_TEXTS).flat().filter(Boolean))];
+
+function detectQqFarmFriendListOverlay(
+  blocks: OcrTextBlock[],
+  png: PNG,
+): { matchedTexts: string[] } | undefined {
+  const tabMatch = findOcrTextBlock(blocks, QQ_FARM_FRIEND_LIST_TAB_TEXTS, {
+    minX: png.width * 0.28,
+    maxX: png.width * 0.76,
+    minY: png.height * 0.08,
+    maxY: png.height * 0.28,
+  });
+  if (!tabMatch) {
+    return undefined;
+  }
+
+  const visitMatch = findOcrTextBlock(blocks, QQ_FARM_FRIEND_VISIT_TEXTS, {
+    minX: png.width * 0.55,
+    maxX: png.width * 0.82,
+    minY: png.height * 0.22,
+    maxY: png.height * 0.84,
+  });
+  if (!visitMatch) {
+    return undefined;
+  }
+
+  return {
+    matchedTexts: [tabMatch.text, visitMatch.text],
+  };
+}
+
+async function resolveQqFarmFriendVisitTargetOnAndroid(deviceId: string): Promise<QqFarmFriendVisitTarget> {
+  const screenshotBuffer = await captureScreen(deviceId);
+  const png = PNG.sync.read(screenshotBuffer);
+  const blocks = await recognizeTextBlocks(screenshotBuffer, log);
+  const visitTemplateTargets = detectQqFarmTemplateMatches(
+    screenshotBuffer,
+    QQ_FARM_FRIEND_VISIT_TEMPLATE_CANDIDATES,
+    {
+      minXRatio: 0.52,
+      maxXRatio: 0.95,
+      minYRatio: 0.16,
+      maxYRatio: 0.9,
+      minScore: 0.78,
+      maxMatches: 10,
+    },
+  )
+    .map((match) => ({
+      x: match.centerX,
+      y: match.centerY,
+      score: match.score,
+    }))
+    .sort((left, right) => left.y - right.y || left.x - right.x);
+  const visitTextTargets = findMatchingOcrTextBlocks(blocks, QQ_FARM_FRIEND_VISIT_TEXTS, {
+    minX: png.width * 0.56,
+    minY: png.height * 0.18,
+    maxY: png.height * 0.9,
+  }).map((block) => ({
+    x: block.centerX,
+    y: block.centerY,
+    text: block.text,
+  }));
+  const visitButtons = findGreenButtonCentersFromPng(png).map((center) => ({
     x: center.centerX,
     y: center.centerY,
+    pixelCount: center.pixelCount,
   }));
+  const helpBlocks = findMatchingOcrTextBlocks(blocks, QQ_FARM_FRIEND_HELP_TEXTS, {
+    minX: png.width * 0.08,
+    maxX: png.width * 0.74,
+    minY: png.height * 0.16,
+    maxY: png.height * 0.9,
+  });
+  const maxRowGap = png.height * 0.08;
+
+  for (const block of helpBlocks) {
+    const anchor = { x: block.centerX, y: block.centerY };
+    const sidecarVisitTarget = await locateQqFarmUiPointWithSidecars(screenshotBuffer, QQ_FARM_FRIEND_VISIT_TEXTS, {
+      minXRatio: 0.52,
+      maxXRatio: 0.95,
+      minYRatio: Math.max(0, (anchor.y - maxRowGap) / png.height),
+      maxYRatio: Math.min(1, (anchor.y + maxRowGap) / png.height),
+      log,
+    });
+    if (sidecarVisitTarget) {
+      return {
+        point: { x: sidecarVisitTarget.x, y: sidecarVisitTarget.y },
+        alternatePoint: {
+          x: Math.round(png.width * 0.36),
+          y: sidecarVisitTarget.y,
+        },
+        note: `已优先通过${sidecarVisitTarget.provider}拜访需要帮忙好友：${block.text}`,
+      };
+    }
+
+    const visitTemplateTarget = pickClosestFriendRowTarget(visitTemplateTargets, anchor, maxRowGap, true);
+    if (visitTemplateTarget) {
+      return {
+        point: { x: visitTemplateTarget.x, y: visitTemplateTarget.y },
+        alternatePoint: {
+          x: Math.round(png.width * 0.36),
+          y: visitTemplateTarget.y,
+        },
+        note: `已优先通过模板拜访需要帮忙好友：${block.text}`,
+      };
+    }
+
+    const visitTextTarget = pickClosestFriendRowTarget(visitTextTargets, anchor, maxRowGap, true);
+    if (visitTextTarget) {
+      return {
+        point: { x: visitTextTarget.x, y: visitTextTarget.y },
+        alternatePoint: {
+          x: Math.round(png.width * 0.36),
+          y: visitTextTarget.y,
+        },
+        note: `已优先拜访需要帮忙好友：${block.text}`,
+      };
+    }
+
+    const visitButton = pickClosestFriendRowTarget(visitButtons, anchor, maxRowGap, true);
+    if (visitButton) {
+      return {
+        point: { x: visitButton.x, y: visitButton.y },
+        alternatePoint: {
+          x: Math.round(png.width * 0.36),
+          y: visitButton.y,
+        },
+        note: `已优先拜访需要帮忙好友：${block.text}`,
+      };
+    }
+
+    return {
+      point: {
+        x: Math.round(png.width * 0.36),
+        y: block.centerY,
+      },
+      note: `已通过好友条目进入需要帮忙好友农场：${block.text}`,
+    };
+  }
+
+  const sidecarVisitTarget = await locateQqFarmUiPointWithSidecars(screenshotBuffer, QQ_FARM_FRIEND_VISIT_TEXTS, {
+    minXRatio: 0.52,
+    maxXRatio: 0.95,
+    minYRatio: 0.16,
+    maxYRatio: 0.9,
+    log,
+  });
+  if (sidecarVisitTarget) {
+    return {
+      point: { x: sidecarVisitTarget.x, y: sidecarVisitTarget.y },
+      alternatePoint: {
+        x: Math.round(png.width * 0.36),
+        y: sidecarVisitTarget.y,
+      },
+      note: `已通过${sidecarVisitTarget.provider}识别好友拜访入口`,
+    };
+  }
+
+  if (visitTemplateTargets.length > 0) {
+    const first = visitTemplateTargets[0];
+    log(`QQ farm friend page detected ${visitTemplateTargets.length} template visit buttons, using first: (${first.x}, ${first.y})`);
+    return {
+      point: { x: first.x, y: first.y },
+      alternatePoint: {
+        x: Math.round(png.width * 0.36),
+        y: first.y,
+      },
+      note: "已通过模板识别好友拜访入口",
+    };
+  }
+
+  if (visitTextTargets.length > 0) {
+    return {
+      point: { x: visitTextTargets[0].x, y: visitTextTargets[0].y },
+      alternatePoint: {
+        x: Math.round(png.width * 0.36),
+        y: visitTextTargets[0].y,
+      },
+      note: `已识别好友拜访入口：${visitTextTargets[0].text}`,
+    };
+  }
+
+  if (visitButtons.length > 0) {
+    const first = visitButtons[0];
+    log(`QQ farm friend page detected ${visitButtons.length} green visit buttons, using first: (${first.x}, ${first.y})`);
+    return {
+      point: { x: first.x, y: first.y },
+      alternatePoint: {
+        x: Math.round(png.width * 0.36),
+        y: first.y,
+      },
+      note: "已按好友列表绿色按钮进入好友农场",
+    };
+  }
+
+  return {
+    point: await resolveCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_FIRST_VISIT_POINT),
+    note: "已按默认好友位进入好友农场",
+  };
 }
 
 async function tryTapTextByOcr(
@@ -2045,6 +2547,89 @@ async function tryTapTextByOcr(
   return true;
 }
 
+async function tryOpenQqFarmUsedMiniProgramResultByOcr(
+  deviceId: string,
+): Promise<boolean> {
+  const screenshot = await captureScreen(deviceId);
+  const png = PNG.sync.read(screenshot);
+  const blocks = await recognizeTextBlocks(screenshot, log);
+  if (blocks.length === 0) {
+    return false;
+  }
+
+  const usedMiniProgramHeader = findOcrTextBlock(blocks, ["使用过的小程序", "最近玩过"], {
+    minX: png.width * 0.28,
+    maxY: png.height * 0.72,
+  });
+  if (!usedMiniProgramHeader) {
+    return false;
+  }
+
+  const resultBlock = findMatchingOcrTextBlocks(blocks, QQ_FARM_RESULT_TEXTS, {
+    minX: png.width * 0.28,
+    minY: usedMiniProgramHeader.bottom,
+    maxY: Math.min(png.height * 0.78, usedMiniProgramHeader.bottom + png.height * 0.18),
+  })
+    .filter((block) => {
+      const normalized = normalizeOcrText(block.text);
+      return !normalized.includes("一起玩") && !normalized.includes("搜索网络结果");
+    })
+    .sort((left, right) => left.centerY - right.centerY || left.centerX - right.centerX)[0];
+
+  if (!resultBlock) {
+    return false;
+  }
+
+  log(`opening QQ classic farm from used mini program result via OCR: ${resultBlock.text}`);
+  await tap(deviceId, resultBlock.centerX, resultBlock.centerY);
+  await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+  return await waitForWeChatAppBrandOpen(deviceId);
+}
+
+async function tryTapQqFarmTemplateOnAndroid(
+  deviceId: string,
+  templateNames: string[],
+  description: string,
+  options: QqFarmTemplateMatchOptions = {},
+): Promise<boolean> {
+  const screenshot = await captureScreen(deviceId);
+  const match = detectBestQqFarmTemplateMatch(screenshot, templateNames, options);
+  if (!match) {
+    return false;
+  }
+
+  log(
+    `${description} via template: ${match.templateName} score=${match.score.toFixed(3)} center=(${match.centerX}, ${match.centerY})`,
+  );
+  await tap(deviceId, match.centerX, match.centerY);
+  return true;
+}
+
+async function tryTapQqFarmVisionSidecarOnAndroid(
+  deviceId: string,
+  candidates: string[],
+  description: string,
+  opts?: {
+    minXRatio?: number;
+    maxXRatio?: number;
+    minYRatio?: number;
+    maxYRatio?: number;
+  },
+): Promise<boolean> {
+  const screenshot = await captureScreen(deviceId);
+  const match = await locateQqFarmUiPointWithSidecars(screenshot, candidates, {
+    ...opts,
+    log,
+  });
+  if (!match) {
+    return false;
+  }
+
+  log(`${description} via ${match.provider}: ${match.label} center=(${match.x}, ${match.y})`);
+  await tap(deviceId, match.x, match.y);
+  return true;
+}
+
 function buildPunchTextCandidates(slot?: ClockInSlotConfig): string[] {
   const slotSpecificTexts =
     slot?.id === "morning"
@@ -2062,7 +2647,60 @@ async function recognizeQqFarmSceneOnAndroid(deviceId: string): Promise<{
 }> {
   const screenshot = await captureScreen(deviceId);
   const blocks = await recognizeTextBlocks(screenshot, log);
-  const detection = detectQqFarmScene(blocks);
+  const png = PNG.sync.read(screenshot);
+  const friendListOverlay = detectQqFarmFriendListOverlay(blocks, png);
+  if (friendListOverlay) {
+    return {
+      scene: "friends",
+      matchedTexts: friendListOverlay.matchedTexts,
+    };
+  }
+  const ocrDetection = detectQqFarmScene(blocks);
+  const visualSnapshot = detectQqFarmVisualSnapshot(screenshot);
+
+  if (visualSnapshot.scene === "friend_farm") {
+    return {
+      scene: "friend-farm",
+      matchedTexts: ["template:btn_home", ...ocrDetection.matchedTexts],
+    };
+  }
+
+  if (visualSnapshot.scene === "farm_overview" && ocrDetection.scene === "store") {
+    return {
+      scene: "home",
+      matchedTexts: [
+        ...ocrDetection.matchedTexts,
+        ...Object.keys(visualSnapshot.markers).map((key) => `template:${key}`),
+      ],
+    };
+  }
+
+  if (
+    (visualSnapshot.scene === "shop_page" || visualSnapshot.scene === "warehouse" || visualSnapshot.scene === "buy_confirm") &&
+    ocrDetection.scene === "unknown"
+  ) {
+    return {
+      scene: "store",
+      matchedTexts: Object.keys(visualSnapshot.markers).map((key) => `template:${key}`),
+    };
+  }
+
+  const detection = ocrDetection.scene !== "unknown"
+    ? ocrDetection
+    : visualSnapshot.scene === "farm_overview"
+      ? { scene: "home" as const, matchedTexts: Object.keys(visualSnapshot.markers).map((key) => `template:${key}`) }
+      : visualSnapshot.scene === "shop_page" || visualSnapshot.scene === "warehouse" || visualSnapshot.scene === "buy_confirm"
+        ? { scene: "store" as const, matchedTexts: Object.keys(visualSnapshot.markers).map((key) => `template:${key}`) }
+        : ocrDetection;
+  if (detection.scene === "unknown") {
+    const sidecarScene = await classifyQqFarmSceneWithSidecars(screenshot, log);
+    if (sidecarScene) {
+      return {
+        scene: sidecarScene.scene,
+        matchedTexts: sidecarScene.matchedTexts,
+      };
+    }
+  }
   return {
     scene: detection.scene,
     matchedTexts: detection.matchedTexts,
@@ -2087,6 +2725,68 @@ async function waitForQqFarmSceneOnAndroid(
     detection = await recognizeQqFarmSceneOnAndroid(deviceId);
   }
   return detection;
+}
+
+async function waitForQqFarmReadySceneOnAndroid(
+  deviceId: string,
+  timeoutMs = QQ_FARM_STARTUP_PAGE_TIMEOUT_MS,
+): Promise<{
+  scene: QqFarmSceneId;
+  matchedTexts: string[];
+}> {
+  const deadline = Date.now() + Math.max(timeoutMs, 1_000);
+  let detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+
+  while (Date.now() < deadline) {
+    if (detection.scene !== "unknown") {
+      log(
+        `QQ farm ready scene detected: ${detection.scene}${
+          detection.matchedTexts.length > 0 ? ` (${detection.matchedTexts.join(", ")})` : ""
+        }`,
+      );
+      return detection;
+    }
+
+    const topActivity = await readTopResumedActivity(deviceId);
+    if (!isWeChatAppBrandActivity(topActivity)) {
+      return detection;
+    }
+
+    await sleep(1_000);
+    detection = await recognizeQqFarmSceneOnAndroid(deviceId);
+  }
+
+  return detection;
+}
+
+async function ensureQqFarmReadyAfterOpenOnAndroid(deviceId: string): Promise<string[]> {
+  const notes: string[] = [];
+  let detection = await waitForQqFarmReadySceneOnAndroid(deviceId);
+  if (detection.scene !== "unknown") {
+    return notes;
+  }
+
+  for (let attempt = 1; attempt <= QQ_FARM_STARTUP_PAGE_REENTER_ATTEMPTS; attempt += 1) {
+    const topActivity = await readTopResumedActivity(deviceId);
+    if (!isWeChatAppBrandActivity(topActivity)) {
+      break;
+    }
+
+    notes.push(
+      `QQ经典农场启动页停留超过 ${Math.round(QQ_FARM_STARTUP_PAGE_TIMEOUT_MS / 1000)} 秒，已返回并重新进入（${attempt}/${QQ_FARM_STARTUP_PAGE_REENTER_ATTEMPTS}）`,
+    );
+    log(`QQ farm startup page timed out, reopening mini program (${attempt}/${QQ_FARM_STARTUP_PAGE_REENTER_ATTEMPTS})`);
+    await adb(deviceId, ["shell", "input", "keyevent", "4"]);
+    await sleep(1_200);
+    await openQqFarmMiniProgram(deviceId);
+    await sleep(QQ_FARM_POST_OPEN_DELAY_MS);
+    detection = await waitForQqFarmReadySceneOnAndroid(deviceId);
+    if (detection.scene !== "unknown") {
+      return notes;
+    }
+  }
+
+  return notes;
 }
 
 async function ensureQqFarmHomeScene(deviceId: string): Promise<QqFarmSceneId> {
@@ -2126,6 +2826,11 @@ async function waitForWeChatAppBrandOpen(deviceId: string): Promise<boolean> {
 }
 
 async function tryOpenQqFarmByOcr(deviceId: string): Promise<boolean> {
+  const openedFromUsedMiniProgram = await tryOpenQqFarmUsedMiniProgramResultByOcr(deviceId);
+  if (openedFromUsedMiniProgram) {
+    return true;
+  }
+
   const attempts: Array<{
     candidates: string[];
     description: string;
@@ -2167,6 +2872,39 @@ async function tryOpenQqFarmByOcr(deviceId: string): Promise<boolean> {
     if (await waitForWeChatAppBrandOpen(deviceId)) {
       return true;
     }
+
+    const openedByForward = await tryTapTextByOcr(
+      deviceId,
+      QQ_FARM_OPEN_TEXTS,
+      "opening QQ classic farm official account forward button",
+      {
+        minXRatio: 0.55,
+        maxXRatio: 0.95,
+        minYRatio: 0.15,
+        maxYRatio: 0.85,
+      },
+    );
+    if (!openedByForward) {
+      const openedBySidecar = await tryTapQqFarmVisionSidecarOnAndroid(
+        deviceId,
+        QQ_FARM_OPEN_TEXTS,
+        "opening QQ classic farm official account forward button",
+        {
+          minXRatio: 0.55,
+          maxXRatio: 0.95,
+          minYRatio: 0.15,
+          maxYRatio: 0.85,
+        },
+      );
+      if (!openedBySidecar) {
+        continue;
+      }
+    }
+
+    await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+    if (await waitForWeChatAppBrandOpen(deviceId)) {
+      return true;
+    }
   }
 
   return false;
@@ -2185,6 +2923,39 @@ async function tryOpenQqFarmByPointCandidates(deviceId: string): Promise<boolean
     await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
     const topActivity = await waitForWeChatAppBrand(deviceId);
     if (isWeChatAppBrandActivity(topActivity)) {
+      return true;
+    }
+
+    const openedByForward = await tryTapTextByOcr(
+      deviceId,
+      QQ_FARM_OPEN_TEXTS,
+      "opening QQ classic farm official account forward button",
+      {
+        minXRatio: 0.55,
+        maxXRatio: 0.95,
+        minYRatio: 0.15,
+        maxYRatio: 0.85,
+      },
+    );
+    if (!openedByForward) {
+      const openedBySidecar = await tryTapQqFarmVisionSidecarOnAndroid(
+        deviceId,
+        QQ_FARM_OPEN_TEXTS,
+        "opening QQ classic farm official account forward button",
+        {
+          minXRatio: 0.55,
+          maxXRatio: 0.95,
+          minYRatio: 0.15,
+          maxYRatio: 0.85,
+        },
+      );
+      if (!openedBySidecar) {
+        continue;
+      }
+    }
+
+    await sleep(WECHAT_APPBRAND_OPEN_DELAY_MS);
+    if (await waitForWeChatAppBrandOpen(deviceId)) {
       return true;
     }
   }
@@ -2258,6 +3029,7 @@ async function openQqFarmFromWeChatSearch(deviceId: string): Promise<void> {
 }
 
 async function dismissQqFarmTransientPopups(deviceId: string): Promise<void> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "当前不在微信小游戏前台，已停止弹窗清理");
   // These taps are intentionally tolerant: on the normal farm canvas they land on empty sky/ground,
   // while on welcome/level-up overlays they close the dialog and let the flow continue.
   await tapCurrentScreenPoint(deviceId, QQ_FARM_POPUP_CLOSE_POINT, "closing QQ farm popup if present");
@@ -2272,6 +3044,7 @@ async function runQqFarmPrimaryAction(
   description: string,
   fallbackPoint: PointRatio,
 ): Promise<"ocr" | "point"> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, `${description} 前当前不在微信小游戏前台`);
   const tappedByOcr = await tryTapTextByOcr(deviceId, candidates, description, {
     minXRatio: 0.22,
     maxXRatio: 0.82,
@@ -2342,6 +3115,7 @@ async function openQqFarmSeedChooserOnAndroid(
   png: PNG;
   plotType?: string;
 }> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "打开地块种子下拉框前当前不在微信小游戏前台");
   await tap(deviceId, plot.x, plot.y);
   await sleep(QQ_FARM_SEED_CHOOSER_DELAY_MS);
   const screenshot = await captureScreen(deviceId);
@@ -2370,8 +3144,27 @@ async function closeQqFarmStoreOnAndroid(deviceId: string): Promise<void> {
   await sleep(800);
 }
 
-async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[]): Promise<string | undefined> {
-  const openedByOcr = await tryTapTextByOcr(deviceId, ["商店", "商城"], "opening QQ farm store", {
+async function tryConfirmQqFarmPurchaseOnAndroid(deviceId: string, description: string): Promise<boolean> {
+  const confirmedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_PURCHASE_CONFIRM_TEXTS, description, {
+    minYRatio: 0.5,
+    maxYRatio: 0.96,
+  });
+  if (confirmedByOcr) {
+    return true;
+  }
+
+  return await tryTapQqFarmTemplateOnAndroid(deviceId, ["btn_buy_confirm"], description, {
+    minXRatio: 0.26,
+    maxXRatio: 0.82,
+    minYRatio: 0.5,
+    maxYRatio: 0.96,
+    minScore: 0.7,
+  });
+}
+
+async function openQqFarmStoreOnAndroid(deviceId: string): Promise<boolean> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "打开商店前当前不在微信小游戏前台");
+  const openedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_STORE_ENTRY_TEXTS, "opening QQ farm store", {
     maxXRatio: 0.22,
     minYRatio: 0.85,
   });
@@ -2379,7 +3172,85 @@ async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[])
     await tapCurrentScreenPoint(deviceId, QQ_FARM_STORE_ENTRY_POINT, "opening QQ farm store");
   }
 
-  if (!(await waitForQqFarmStoreSceneOnAndroid(deviceId))) {
+  return await waitForQqFarmStoreSceneOnAndroid(deviceId);
+}
+
+async function openQqFarmWarehouseOnAndroid(deviceId: string): Promise<boolean> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "打开仓库前当前不在微信小游戏前台");
+  const openedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_WAREHOUSE_ENTRY_TEXTS, "opening QQ farm warehouse", {
+    maxXRatio: 0.26,
+    minYRatio: 0.74,
+  });
+  const openedByTemplate =
+    openedByOcr ||
+    (await tryTapQqFarmTemplateOnAndroid(deviceId, ["btn_warehouse"], "opening QQ farm warehouse", {
+      maxXRatio: 0.28,
+      minYRatio: 0.7,
+      minScore: 0.7,
+    }));
+  if (!openedByTemplate) {
+    return false;
+  }
+
+  await sleep(1_000);
+  return true;
+}
+
+async function openQqFarmMallOnAndroid(deviceId: string): Promise<boolean> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "打开商城前当前不在微信小游戏前台");
+  const openedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_MALL_ENTRY_TEXTS, "opening QQ farm mall", {
+    minXRatio: 0.9,
+    maxXRatio: 0.995,
+    minYRatio: 0.08,
+    maxYRatio: 0.28,
+  });
+  if (!openedByOcr) {
+    await tapCurrentScreenPoint(deviceId, QQ_FARM_MALL_ENTRY_POINT, "opening QQ farm mall");
+  }
+
+  await sleep(1_200);
+  return true;
+}
+
+async function tryBuySeedFromShopTemplatesOnAndroid(deviceId: string, notes: string[]): Promise<string | undefined> {
+  if (QQ_FARM_SHOP_TEMPLATE_CANDIDATES.length === 0) {
+    return undefined;
+  }
+
+  const screenshot = await captureScreen(deviceId);
+  const match = detectBestQqFarmTemplateMatch(screenshot, QQ_FARM_SHOP_TEMPLATE_CANDIDATES, {
+    minXRatio: 0.18,
+    maxXRatio: 0.82,
+    minYRatio: 0.16,
+    maxYRatio: QQ_FARM_STORE_VISIBLE_MAX_Y_RATIO,
+    minScore: 0.72,
+  });
+  if (!match) {
+    return undefined;
+  }
+
+  const label = match.templateName.replace(/^shop_/, "").replace(/\.png$/i, "");
+  notes.push(`商店种子：模板匹配 ${label}`);
+  log(`buying seed from shop template: ${label} via ${match.templateName} score=${match.score.toFixed(3)}`);
+  await tap(deviceId, match.centerX, match.centerY);
+  await sleep(700);
+
+  const sceneAfterTap = await recognizeQqFarmSceneOnAndroid(deviceId);
+  if (sceneAfterTap.scene !== "store") {
+    return label;
+  }
+
+  const confirmed = await tryConfirmQqFarmPurchaseOnAndroid(deviceId, "confirming QQ farm template seed purchase");
+  if (!confirmed) {
+    return undefined;
+  }
+
+  await sleep(900);
+  return label;
+}
+
+async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[]): Promise<string | undefined> {
+  if (!(await openQqFarmStoreOnAndroid(deviceId))) {
     return undefined;
   }
 
@@ -2395,6 +3266,14 @@ async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[])
   notes.push(`商店种子：${summary}`);
   const candidate = pickLatestUnlockedQqFarmStoreSeed(seeds);
   if (!candidate) {
+    const fallbackPurchased = await tryBuySeedFromShopTemplatesOnAndroid(deviceId, notes);
+    if (fallbackPurchased) {
+      const sceneAfterFallback = await recognizeQqFarmSceneOnAndroid(deviceId);
+      if (sceneAfterFallback.scene === "store") {
+        await closeQqFarmStoreOnAndroid(deviceId);
+      }
+      return fallbackPurchased;
+    }
     await closeQqFarmStoreOnAndroid(deviceId);
     return undefined;
   }
@@ -2418,10 +3297,7 @@ async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[])
     }
   }
 
-  const confirmTapped = await tryTapTextByOcr(deviceId, ["确定"], "confirming QQ farm seed purchase", {
-    minYRatio: 0.62,
-    maxYRatio: 0.9,
-  });
+  const confirmTapped = await tryConfirmQqFarmPurchaseOnAndroid(deviceId, "confirming QQ farm seed purchase");
   if (!confirmTapped) {
     await closeQqFarmStoreOnAndroid(deviceId);
     return undefined;
@@ -2433,6 +3309,118 @@ async function buyLatestUnlockedSeedOnAndroid(deviceId: string, notes: string[])
     await closeQqFarmStoreOnAndroid(deviceId);
   }
   return candidate.label;
+}
+
+async function runQqFarmWarehouseModuleOnAndroid(deviceId: string): Promise<QqFarmHomeModuleResult> {
+  const notes: string[] = [];
+  const opened = await openQqFarmWarehouseOnAndroid(deviceId);
+  if (!opened) {
+    notes.push("未识别到仓库入口");
+    return { notes };
+  }
+
+  notes.push("已打开仓库");
+  const soldByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_WAREHOUSE_SELL_TEXTS, "running QQ farm warehouse sell", {
+    minYRatio: 0.46,
+    maxYRatio: 0.96,
+  });
+  const soldByTemplate =
+    soldByOcr ||
+    (await tryTapQqFarmTemplateOnAndroid(deviceId, ["btn_batch_sell", "btn_sell"], "running QQ farm warehouse sell", {
+      minXRatio: 0.18,
+      maxXRatio: 0.88,
+      minYRatio: 0.4,
+      maxYRatio: 0.96,
+      minScore: 0.7,
+    }));
+  if (!soldByTemplate) {
+    notes.push("未识别到仓库一键出售入口");
+    await closeQqFarmStoreOnAndroid(deviceId);
+    return { notes };
+  }
+
+  await sleep(900);
+  const confirmed = await tryConfirmQqFarmPurchaseOnAndroid(deviceId, "confirming QQ farm warehouse sale");
+  if (confirmed) {
+    await sleep(900);
+    notes.push("已执行仓库一键出售");
+  } else {
+    notes.push("已尝试仓库一键出售");
+  }
+
+  await closeQqFarmStoreOnAndroid(deviceId);
+  return { notes };
+}
+
+async function runQqFarmMallModuleOnAndroid(deviceId: string): Promise<QqFarmHomeModuleResult> {
+  const notes: string[] = [];
+  const opened = await openQqFarmMallOnAndroid(deviceId);
+  if (!opened) {
+    notes.push("未识别到商城入口");
+    return { notes };
+  }
+
+  notes.push("已打开商城");
+  let openedFertilizer =
+    (await tryTapQqFarmTemplateOnAndroid(
+      deviceId,
+      ["bth_feiliao2_yj", "btn_fertilize_popup"],
+      "opening QQ farm 10-hour organic fertilizer",
+      {
+        minXRatio: 0.08,
+        maxXRatio: 0.92,
+        minYRatio: 0.14,
+        maxYRatio: 0.96,
+        minScore: 0.66,
+      },
+    )) ||
+    (await tryTapTextByOcr(
+      deviceId,
+      QQ_FARM_MALL_FERTILIZER_TEXTS,
+      "opening QQ farm 10-hour organic fertilizer",
+      {
+        minXRatio: 0.12,
+        maxXRatio: 0.9,
+        minYRatio: 0.18,
+        maxYRatio: 0.94,
+      },
+    ));
+  if (!openedFertilizer) {
+    await tapCurrentScreenPoint(
+      deviceId,
+      QQ_FARM_MALL_ORGANIC_FERTILIZER_POINT,
+      "opening QQ farm 10-hour organic fertilizer via configured mall card point",
+    );
+    openedFertilizer = true;
+  }
+  if (!openedFertilizer) {
+    notes.push("未识别到10小时有机化肥入口");
+    await closeQqFarmStoreOnAndroid(deviceId);
+    return { notes };
+  }
+
+  await sleep(900);
+  const confirmed = await tryConfirmQqFarmPurchaseOnAndroid(deviceId, "confirming QQ farm organic fertilizer purchase");
+  if (confirmed) {
+    await sleep(900);
+    notes.push("已购买10小时有机化肥");
+  } else {
+    notes.push("已尝试购买10小时有机化肥");
+  }
+
+  await closeQqFarmStoreOnAndroid(deviceId);
+  return { notes };
+}
+
+async function runQqFarmStoreModuleOnAndroid(deviceId: string): Promise<QqFarmHomeModuleResult> {
+  const notes: string[] = [];
+  const purchased = await buyLatestUnlockedSeedOnAndroid(deviceId, notes);
+  if (purchased) {
+    notes.push(`已购买最新解锁种子：${purchased}`);
+  } else {
+    notes.push("未识别到可购买种子");
+  }
+  return { notes };
 }
 
 async function resolveSeedChoiceForPlantingOnAndroid(
@@ -2479,15 +3467,37 @@ async function plantSinglePlotOnAndroid(
   notes: string[],
   options: QqFarmSeedChoiceOptions = {},
 ): Promise<boolean> {
-  const resolved = await resolveSeedChoiceForPlantingOnAndroid(deviceId, plot, notes, options);
-  if (!resolved) {
-    return false;
+  let shouldRecordPlotType = options.recordPlotType ?? true;
+  let shouldRecordPurchase = options.recordPurchase ?? true;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const resolved = await resolveSeedChoiceForPlantingOnAndroid(deviceId, plot, notes, {
+      ...options,
+      recordPlotType: shouldRecordPlotType,
+      recordPurchase: shouldRecordPurchase,
+    });
+    if (!resolved) {
+      return false;
+    }
+
+    notes.push(`已点击下拉种子库存：${resolved.choice.count}`);
+    await tap(deviceId, resolved.choice.x, resolved.choice.y);
+    await sleep(QQ_FARM_SINGLE_PLANT_DELAY_MS);
+
+    const detectedPlots = await detectQqFarmPlotsOnAndroid(deviceId);
+    const targetPlot = detectedPlots.find((candidate) => candidate.row === plot.row && candidate.column === plot.column);
+    if (!targetPlot || targetPlot.state !== "empty") {
+      return true;
+    }
+
+    if (attempt < 2) {
+      notes.push(`单块补种未命中，正在重试 r${plot.row}c${plot.column}`);
+    }
+    shouldRecordPlotType = false;
+    shouldRecordPurchase = false;
   }
 
-  notes.push(`已点击下拉种子库存：${resolved.choice.count}`);
-  await tap(deviceId, resolved.choice.x, resolved.choice.y);
-  await sleep(QQ_FARM_SINGLE_PLANT_DELAY_MS);
-  return true;
+  return false;
 }
 
 async function batchPlantEmptyPlotsOnAndroid(
@@ -2590,7 +3600,8 @@ async function runQqFarmPlantingModuleOnAndroid(deviceId: string): Promise<QqFar
       recordPurchase: true,
     });
     if (!planted) {
-      break;
+      notes.push(`单块补种失败 r${plot.row}c${plot.column}`);
+      continue;
     }
     recordedPlotType = true;
     plantedSingles += 1;
@@ -2612,6 +3623,21 @@ async function runQqFarmPlantingModuleOnAndroid(deviceId: string): Promise<QqFar
 async function runQqFarmHomeModulesOnAndroid(deviceId: string): Promise<string[]> {
   const modules: QqFarmHomeModule[] = [
     {
+      id: "warehouse",
+      name: "仓库模块",
+      run: runQqFarmWarehouseModuleOnAndroid,
+    },
+    {
+      id: "store",
+      name: "商店模块",
+      run: runQqFarmStoreModuleOnAndroid,
+    },
+    {
+      id: "mall",
+      name: "商城模块",
+      run: runQqFarmMallModuleOnAndroid,
+    },
+    {
       id: "planting",
       name: "播种模块",
       run: runQqFarmPlantingModuleOnAndroid,
@@ -2628,6 +3654,7 @@ async function runQqFarmHomeModulesOnAndroid(deviceId: string): Promise<string[]
 }
 
 async function openQqFarmFriendList(deviceId: string): Promise<boolean> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "打开好友列表前当前不在微信小游戏前台");
   const openedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_FRIEND_ENTRY_TEXTS, "opening QQ farm friend list", {
     minXRatio: 0.8,
     minYRatio: 0.75,
@@ -2641,26 +3668,100 @@ async function openQqFarmFriendList(deviceId: string): Promise<boolean> {
   return detection.scene === "friends";
 }
 
-async function visitQqFarmFriend(deviceId: string): Promise<boolean> {
-  const visitedByOcr = await tryTapTextByOcr(deviceId, QQ_FARM_FRIEND_VISIT_TEXTS, "visiting first QQ farm friend", {
-    minXRatio: 0.58,
-    minYRatio: 0.18,
-    maxYRatio: 0.88,
-  });
-  if (!visitedByOcr) {
-    const candidates = await detectAndroidFriendVisitButtons(deviceId);
-    if (candidates.length > 0) {
-      const first = candidates[0];
-      log(`QQ farm friend page detected ${candidates.length} green visit buttons, using first: (${first.x}, ${first.y})`);
-      await tap(deviceId, first.x, first.y);
-    } else {
-      await tapCurrentScreenPoint(deviceId, QQ_FARM_FRIEND_FIRST_VISIT_POINT, "visiting first QQ farm friend");
-    }
-  }
+async function visitQqFarmFriend(deviceId: string): Promise<{ visited: boolean; note: string }> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "拜访好友前当前不在微信小游戏前台");
+  const target = await resolveQqFarmFriendVisitTargetOnAndroid(deviceId);
+  await tap(deviceId, target.point.x, target.point.y);
   await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
 
-  const detection = await waitForQqFarmSceneOnAndroid(deviceId, 8, 1_000);
+  let detection = await waitForQqFarmSceneOnAndroid(deviceId, 8, 1_000);
+  if (detection.scene !== "friend-farm" && target.alternatePoint) {
+    log(`QQ farm friend visit fallback tap: (${target.alternatePoint.x}, ${target.alternatePoint.y})`);
+    await tap(deviceId, target.alternatePoint.x, target.alternatePoint.y);
+    await sleep(QQ_FARM_STEAL_RUN_DELAY_MS);
+    detection = await waitForQqFarmSceneOnAndroid(deviceId, 8, 1_000);
+  }
+  return {
+    visited: detection.scene === "friend-farm",
+    note: target.note,
+  };
+}
+
+async function visitFriendFromBottomCarouselOnAndroid(
+  deviceId: string,
+  direction: QqFarmFriendCarouselDirection,
+): Promise<boolean> {
+  await ensureQqFarmForegroundOnAndroid(deviceId, "点击底部好友栏前当前不在微信小游戏前台");
+  const tapPoint =
+    direction === "left" ? QQ_FARM_FRIEND_CAROUSEL_LEFT_TAP_POINT : QQ_FARM_FRIEND_CAROUSEL_RIGHT_TAP_POINT;
+  const target = await resolveCurrentScreenPoint(deviceId, tapPoint);
+  await tap(deviceId, target.x, target.y);
+  await sleep(QQ_FARM_FRIEND_CAROUSEL_DELAY_MS);
+
+  const detection = await waitForQqFarmSceneOnAndroid(deviceId, 5, 800);
   return detection.scene === "friend-farm";
+}
+
+async function runQqFarmFriendAccessModuleOnAndroid(deviceId: string): Promise<QqFarmFriendModuleResult> {
+  const notes: string[] = [];
+  const friendListOpened = await openQqFarmFriendList(deviceId);
+  if (!friendListOpened) {
+    notes.push("未确认打开好友列表");
+    return { notes };
+  }
+  notes.push("已打开好友列表");
+  await sleep(800);
+
+  const initialVisit = await visitQqFarmFriend(deviceId);
+  notes.push(initialVisit.note);
+  if (!initialVisit.visited) {
+    await dismissQqFarmTransientPopups(deviceId);
+    const retryVisit = await visitQqFarmFriend(deviceId);
+    notes.push(`好友拜访重试：${retryVisit.note}`);
+    if (!retryVisit.visited) {
+      notes.push("未确认进入好友农场");
+      return { notes };
+    }
+  }
+  notes.push("已拜访好友农场");
+  notes.push(...await runQqFarmOneKeyActionSequence(deviceId, QQ_FARM_FRIEND_ONE_KEY_ACTIONS, QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT));
+
+  for (const direction of QQ_FARM_FRIEND_CAROUSEL_DIRECTIONS) {
+    const visited = await visitFriendFromBottomCarouselOnAndroid(deviceId, direction);
+    if (!visited) {
+      notes.push(`未确认通过底部好友栏向${direction === "left" ? "左" : "右"}切换好友农场`);
+      continue;
+    }
+
+    notes.push(`已通过底部好友栏${direction === "left" ? "左" : "右"}侧好友入口进入好友农场`);
+    notes.push(...await runQqFarmOneKeyActionSequence(deviceId, QQ_FARM_FRIEND_ONE_KEY_ACTIONS, QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT));
+  }
+
+  const returnedHomeScene = await ensureQqFarmHomeScene(deviceId);
+  if (returnedHomeScene === "home") {
+    notes.push("已回到自家农场");
+  } else {
+    notes.push(`回家后场景为 ${returnedHomeScene}`);
+  }
+  return { notes };
+}
+
+async function runQqFarmFriendModulesOnAndroid(deviceId: string): Promise<string[]> {
+  const modules: QqFarmFriendModule[] = [
+    {
+      id: "friend-access",
+      name: "访问好友操作模块",
+      run: runQqFarmFriendAccessModuleOnAndroid,
+    },
+  ];
+
+  const notes: string[] = [];
+  for (const module of modules) {
+    notes.push(`开始执行${module.name}`);
+    const result = await module.run(deviceId);
+    notes.push(...result.notes);
+  }
+  return notes;
 }
 
 type QqFarmRoutineResult = {
@@ -2671,6 +3772,7 @@ type QqFarmRoutineResult = {
 async function runQqFarmRoutine(deviceId: string): Promise<QqFarmRoutineResult> {
   const notes: string[] = [];
   await sleep(QQ_FARM_POST_OPEN_DELAY_MS);
+  notes.push(...await ensureQqFarmReadyAfterOpenOnAndroid(deviceId));
   const readyScene = await waitForQqFarmSceneOnAndroid(deviceId, 6, 1_000);
   if (readyScene.scene === "unknown") {
     notes.push("未确认 QQ 农场主场景已就绪");
@@ -2684,40 +3786,46 @@ async function runQqFarmRoutine(deviceId: string): Promise<QqFarmRoutineResult> 
     notes.push(`当前场景为 ${initialScene}，已继续按兜底流程处理`);
   }
 
-  notes.push(...await runQqFarmOneKeyActionSequence(deviceId, QQ_FARM_HOME_ONE_KEY_ACTIONS, QQ_FARM_ONE_KEY_HARVEST_POINT));
+  let homeOneKeyHandledByVision = false;
+  const visionHomeResult = await tryRunQqFarmVisionControllerOnAndroid(deviceId, "home");
+  if (visionHomeResult) {
+    homeOneKeyHandledByVision = Boolean(visionHomeResult.completed_home_one_key_actions);
+    notes.push(
+      ...(
+        visionHomeResult.notes?.map((note) => `视觉自动化（主页）：${note}`) ?? [
+          `视觉自动化（主页）已执行，最终场景 ${visionHomeResult.final_scene ?? "unknown"}`,
+        ]
+      ),
+    );
+    if ((visionHomeResult.final_scene ?? "unknown") !== "home") {
+      await ensureQqFarmHomeScene(deviceId);
+    }
+  }
+
+  if (!homeOneKeyHandledByVision) {
+    notes.push(...await runQqFarmOneKeyActionSequence(deviceId, QQ_FARM_HOME_ONE_KEY_ACTIONS, QQ_FARM_ONE_KEY_HARVEST_POINT));
+  }
 
   notes.push(...await runQqFarmHomeModulesOnAndroid(deviceId));
   await dismissQqFarmTransientPopups(deviceId);
   await ensureQqFarmHomeScene(deviceId);
 
-  const friendListOpened = await openQqFarmFriendList(deviceId);
-  if (!friendListOpened) {
-    const detection = await recognizeQqFarmSceneOnAndroid(deviceId);
-    notes.push("未确认打开好友列表");
-    return {
-      notes,
-      finalScene: detection.scene,
-    };
+  let friendFlowHandledByVision = false;
+  const visionFriendsResult = await tryRunQqFarmVisionControllerOnAndroid(deviceId, "friends");
+  if (visionFriendsResult) {
+    friendFlowHandledByVision = Boolean(visionFriendsResult.completed_friend_flow);
+    notes.push(
+      ...(
+        visionFriendsResult.notes?.map((note) => `视觉自动化（好友）：${note}`) ?? [
+          `视觉自动化（好友）已执行，最终场景 ${visionFriendsResult.final_scene ?? "unknown"}`,
+        ]
+      ),
+    );
   }
-  notes.push("已打开好友列表");
-  await sleep(800);
 
-  const visitedFriend = await visitQqFarmFriend(deviceId);
-  if (!visitedFriend) {
-    const detection = await recognizeQqFarmSceneOnAndroid(deviceId);
-    notes.push("未确认进入好友农场");
-    return {
-      notes,
-      finalScene: detection.scene,
-    };
-  }
-  notes.push("已拜访好友农场");
-
-  notes.push(...await runQqFarmOneKeyActionSequence(deviceId, QQ_FARM_FRIEND_ONE_KEY_ACTIONS, QQ_FARM_FRIEND_ONE_KEY_STEAL_POINT));
-
-  const returnedHomeScene = await ensureQqFarmHomeScene(deviceId);
-  if (returnedHomeScene === "home") {
-    notes.push("已回到自家农场");
+  if (!friendFlowHandledByVision) {
+    await ensureQqFarmHomeScene(deviceId);
+    notes.push(...await runQqFarmFriendModulesOnAndroid(deviceId));
   }
 
   const finalDetection = await waitForQqFarmSceneOnAndroid(deviceId, 4, 800);
@@ -2758,6 +3866,87 @@ function summarizeCommandOutput(result: CommandResult): string | undefined {
     return undefined;
   }
   return combined.replace(/\s+/g, " ").slice(0, 160);
+}
+
+function parseQqFarmVisionControllerOutput(raw: string): QqFarmVisionControllerResult | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const lines = trimmed
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(lines[index]) as QqFarmVisionControllerResult;
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+async function tryRunQqFarmVisionControllerOnAndroid(
+  deviceId: string,
+  phase: QqFarmVisionControllerPhase,
+): Promise<QqFarmVisionControllerResult | undefined> {
+  if (ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "off") {
+    return undefined;
+  }
+
+  if (!ANDROID_QQ_FARM_VISION_CONTROLLER_COMMAND) {
+    if (ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "on") {
+      throw new Error("已启用 Android 视觉 controller，但未找到默认脚本，也未配置 WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_COMMAND。");
+    }
+    return undefined;
+  }
+
+  const command = `${ANDROID_QQ_FARM_VISION_CONTROLLER_COMMAND} --phase ${phase}`;
+  try {
+    const result = await runShellCommand(command, {
+      allowNonZero: true,
+      timeoutMs: QQ_FARM_VISION_CONTROLLER_TIMEOUT_MS,
+      env: {
+        WEIXIN_CONNECTED_DEVICE_ID: deviceId,
+        WEIXIN_QQ_FARM_VISION_PHASE: phase,
+      },
+    });
+    const parsed = parseQqFarmVisionControllerOutput(result.stdout);
+    if (!parsed) {
+      const details = summarizeCommandOutput(result) ?? "未输出 JSON 结果";
+      if (ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "on") {
+        throw new Error(`Android 视觉 controller 未返回有效结果：${details}`);
+      }
+      log(`QQ farm vision controller phase=${phase} skipped: ${details}`);
+      return undefined;
+    }
+
+    if (parsed.ok) {
+      log(`QQ farm vision controller phase=${phase} ok scene=${parsed.final_scene ?? "unknown"} run_dir=${parsed.run_dir ?? "-"}`);
+      return parsed;
+    }
+
+    const message = parsed.reason ?? summarizeCommandOutput(result) ?? "unknown error";
+    if (parsed.unsupported && ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "auto") {
+      log(`QQ farm vision controller phase=${phase} unavailable: ${message}`);
+      return undefined;
+    }
+    if (ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "on") {
+      throw new Error(`Android 视觉 controller 失败（phase=${phase}）：${message}`);
+    }
+    log(`QQ farm vision controller phase=${phase} failed, falling back: ${message}`);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (ANDROID_QQ_FARM_VISION_CONTROLLER_MODE === "on") {
+      throw new Error(`Android 视觉 controller 调用失败（phase=${phase}）：${message}`);
+    }
+    log(`QQ farm vision controller phase=${phase} error, falling back: ${message}`);
+    return undefined;
+  }
 }
 
 function resolveRequiredIosCommand(command: string | undefined, envName: string, actionLabel: string): string {
@@ -2827,11 +4016,19 @@ function buildQqFarmSuccessText(args: {
   return `已识别 ${platformLabel(args.device.platform)} 设备 ${args.device.name}，已执行 QQ经典农场 流程。`;
 }
 
+function formatQqFarmRetrySuccessNote(attempt: number, extraNote?: string): string | undefined {
+  if (attempt <= 1) {
+    return extraNote;
+  }
+  return extraNote ? `第 ${attempt} 次尝试成功，${extraNote}` : `第 ${attempt} 次尝试成功`;
+}
+
 async function runIosAutomationCommand(args: {
   device: ConnectedDevice;
   command: string;
   action: string;
   clockInSlot?: ClockInSlotConfig;
+  timeoutMs?: number;
 }): Promise<CommandResult> {
   const env: Record<string, string> = {
     WEIXIN_CONNECTED_DEVICE_PLATFORM: args.device.platform,
@@ -2851,7 +4048,7 @@ async function runIosAutomationCommand(args: {
   }
 
   log(`running iOS automation action=${args.action} device=${args.device.name} (${args.device.id})`);
-  return await runShellCommand(args.command, { env });
+  return await runShellCommand(args.command, { env, timeoutMs: args.timeoutMs });
 }
 
 export async function runAttendanceCommand(opts?: {
@@ -2930,40 +4127,93 @@ export async function runAttendanceCommand(opts?: {
 
 export async function runQqFarmCommand(): Promise<ChatResponse> {
   const device = await resolveConnectedDevice();
+  let androidWechatCleaned = false;
   if (device.platform === "ios") {
-    const result = await runIosAutomationCommand({
-      device,
-      command: resolveRequiredIosCommand(
-        IOS_QQ_FARM_COMMAND,
-        "WEIXIN_IOS_QQ_FARM_COMMAND",
-        "QQ 农场偷菜",
-      ),
-      action: "qq-farm",
-    });
-    const summary = summarizeCommandOutput(result);
-    return {
-      text:
-        summary?.includes("暂未执行收菜/偷菜画布点击")
-          ? buildQqFarmSuccessText({
-              device,
-              openedOnly: true,
-              extraNote: "请配置 WEIXIN_IOS_QQ_FARM_CANVAS_STEPS",
-            })
-          : buildQqFarmSuccessText({
-              device,
-              extraNote: summary,
-            }),
-    };
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= QQ_FARM_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        log(`QQ farm iOS attempt ${attempt}/${QQ_FARM_RETRY_ATTEMPTS}`);
+        const result = await runIosAutomationCommand({
+          device,
+          command: resolveRequiredIosCommand(
+            IOS_QQ_FARM_COMMAND,
+            "WEIXIN_IOS_QQ_FARM_COMMAND",
+            "QQ 农场偷菜",
+          ),
+          action: "qq-farm",
+          timeoutMs: QQ_FARM_ATTEMPT_TIMEOUT_MS,
+        });
+        const summary = summarizeCommandOutput(result);
+        return {
+          text:
+            summary?.includes("暂未执行收菜/偷菜画布点击")
+              ? buildQqFarmSuccessText({
+                  device,
+                  openedOnly: true,
+                  extraNote: formatQqFarmRetrySuccessNote(attempt, "请配置 WEIXIN_IOS_QQ_FARM_CANVAS_STEPS"),
+                })
+              : buildQqFarmSuccessText({
+                  device,
+                  extraNote: formatQqFarmRetrySuccessNote(attempt, summary),
+                }),
+        };
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        log(`QQ farm iOS attempt ${attempt}/${QQ_FARM_RETRY_ATTEMPTS} failed: ${message}`);
+        if (attempt < QQ_FARM_RETRY_ATTEMPTS) {
+          log(`QQ farm iOS retrying after ${QQ_FARM_RETRY_DELAY_MS}ms`);
+          await sleep(QQ_FARM_RETRY_DELAY_MS);
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "QQ 农场重试失败"));
   }
 
-  await openQqFarmMiniProgram(device.id);
-  const routineResult = await runQqFarmRoutine(device.id);
-  return {
-    text: buildQqFarmSuccessText({
-      device,
-      extraNote: routineResult.notes.join("，"),
-    }),
-  };
+  try {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= QQ_FARM_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        log(`QQ farm Android attempt ${attempt}/${QQ_FARM_RETRY_ATTEMPTS}`);
+        await openQqFarmMiniProgram(device.id);
+        const routineResult = await runQqFarmRoutine(device.id);
+        const cleanupNote = await cleanupAndroidWeChatAfterQqFarm(device.id);
+        androidWechatCleaned = true;
+        return {
+          text: buildQqFarmSuccessText({
+            device,
+            extraNote: formatQqFarmRetrySuccessNote(
+              attempt,
+              [
+                routineResult.notes.join("，"),
+                routineResult.finalScene === "unknown" ? "收尾时未再次确认场景，已按已执行结果结束" : undefined,
+                cleanupNote,
+              ]
+                .filter(Boolean)
+                .join("，"),
+            ),
+          }),
+        };
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        log(`QQ farm Android attempt ${attempt}/${QQ_FARM_RETRY_ATTEMPTS} failed: ${message}`);
+        if (attempt < QQ_FARM_RETRY_ATTEMPTS) {
+          log(`QQ farm Android retrying after ${QQ_FARM_RETRY_DELAY_MS}ms`);
+          await sleep(QQ_FARM_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "QQ 农场重试失败"));
+  } finally {
+    if (!androidWechatCleaned && CLEAR_ANDROID_WECHAT_AFTER_QQ_FARM) {
+      await cleanupAndroidWeChatAfterQqFarm(device.id).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`QQ farm Android cleanup failed: ${message}`);
+      });
+    }
+  }
 }
 
 async function handleExitDingTalkCommand(): Promise<ChatResponse> {

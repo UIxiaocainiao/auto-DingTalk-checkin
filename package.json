@@ -7,7 +7,12 @@
     "ios:action": "node ./scripts/ios/run-action.mjs",
     "ios:appium": "appium server",
     "ios:appium:install-driver": "appium driver install xcuitest",
-    "ios:doctor": "node ./scripts/ios/run-action.mjs doctor"
+    "ios:doctor": "node ./scripts/ios/run-action.mjs doctor",
+    "qq-farm:vision:omniparser": "pnpm --dir ./qq-classic-farm vision:omniparser",
+    "qq-farm:vision:moondream": "pnpm --dir ./qq-classic-farm vision:moondream",
+    "qq-farm:vision:doctor": "pnpm --dir ./qq-classic-farm vision:doctor",
+    "qq-farm:vision:controller": "pnpm --dir ./qq-classic-farm vision:controller",
+    "qq-farm:record:manual": "pnpm --dir ./qq-classic-farm record:manual"
   },
   "devDependencies": {
     "appium": "^3.2.2",

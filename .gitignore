@@ -2,4 +2,12 @@ node_modules
 dist
 .env
 *.log
+*.pyc
+__pycache__/
 package-lock.json
+.venv-moondream
+.venv-omniparser
+qq-classic-farm/.venv-moondream
+qq-classic-farm/.venv-omniparser
+qq-classic-farm/.venv-paddleocr
+qq-classic-farm/manual-runs

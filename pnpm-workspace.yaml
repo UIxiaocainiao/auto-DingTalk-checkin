@@ -1,2 +1,4 @@
 packages:
   - "packages/*"
+  - "dingtalk-clock-in"
+  - "qq-classic-farm"

@@ -112,6 +112,19 @@ export function normalizeOcrText(value: string): string {
     .replace(/[^\p{L}\p{N}]/gu, "");
 }
 
+function isNormalizedOcrMatch(normalizedBlock: string, normalizedCandidate: string): boolean {
+  if (!normalizedBlock || !normalizedCandidate) {
+    return false;
+  }
+  if (normalizedBlock === normalizedCandidate) {
+    return true;
+  }
+  if (normalizedBlock.includes(normalizedCandidate)) {
+    return true;
+  }
+  return normalizedBlock.length >= 3 && normalizedCandidate.includes(normalizedBlock);
+}
+
 export function findOcrTextBlock(
   blocks: OcrTextBlock[],
   candidates: string[],
@@ -150,9 +163,7 @@ export function findOcrTextBlock(
       if (!candidate.normalized) continue;
 
       const exactMatch = normalizedBlock === candidate.normalized;
-      const fuzzyMatch =
-        normalizedBlock.includes(candidate.normalized) ||
-        candidate.normalized.includes(normalizedBlock);
+      const fuzzyMatch = isNormalizedOcrMatch(normalizedBlock, candidate.normalized);
       if (!exactMatch && !fuzzyMatch) {
         continue;
       }

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { sendProactiveTextMessage } from "weixin-agent-sdk";
+import { sendProactiveTextMessageCompat } from "./proactive-sdk-compat.js";
 
 const DAILY_CRYPTO_BRIEFING_HOUR = 8;
 const DAILY_CRYPTO_BRIEFING_MINUTE = 0;
@@ -272,7 +272,7 @@ export function startDailyCryptoBriefingScheduler(
       }
 
       const text = await fetchCryptoBriefingText();
-      await sendProactiveTextMessage({ text });
+      await sendProactiveTextMessageCompat({ text });
       log(`[daily-crypto] ${today} 已发送主流虚拟货币行情`);
       await saveState({
         lastSentDate: today,

@@ -14,9 +14,9 @@
 
 import { login, start } from "weixin-agent-sdk";
 
+import { startAutoClockInScheduler } from "../../dingtalk-clock-in/src/auto-clock-in.js";
+import { startAutoQqFarmScheduler } from "../../qq-classic-farm/src/auto-qq-farm.js";
 import { AcpAgent } from "./src/acp-agent.js";
-import { startAutoClockInScheduler } from "./src/auto-clock-in.js";
-import { startAutoQqFarmScheduler } from "./src/auto-qq-farm.js";
 import { startDailyCryptoBriefingScheduler } from "./src/daily-crypto-briefing.js";
 import { startDailyMotivationScheduler } from "./src/daily-motivation.js";
 import { LocalCommandAgent } from "./src/local-command-agent.js";

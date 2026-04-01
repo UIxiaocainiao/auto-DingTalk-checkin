@@ -1,8 +1,8 @@
-# auto-DingTalk-checkin
+# RepoTitan
 
 > 本项目非微信官方项目，代码由 [@tencent-weixin/openclaw-weixin](https://npmx.dev/package/@tencent-weixin/openclaw-weixin) 改造而来，仅供学习交流使用。
 
-当前仓库实际是一个「微信 Agent 桥接 + ACP 接入 + 本地设备自动化」的 monorepo。除了把 Codex、Claude Code、kimi-cli 这类 Agent 接进微信，也内置了钉钉打卡、QQ 经典农场和定时主动消息。
+当前仓库实际是一个「微信 Agent 桥接 + ACP 接入 + 本地设备自动化」的 monorepo。主项目以微信 Agent 和共享设备执行器为主；钉钉打卡配置/调度已经整理到 [`dingtalk-clock-in/`](./dingtalk-clock-in)，QQ 经典农场相关模板、视觉 sidecar 和规则模块已经拆到 [`qq-classic-farm/`](./qq-classic-farm)。
 
 ## 项目结构
 
@@ -11,6 +11,8 @@ packages/
   sdk/                  weixin-agent-sdk，微信桥接 SDK
   agent-acp/            weixin-acp，ACP Agent 适配器和本地自动化入口
   example-openai/       基于 OpenAI 的示例 bot
+dingtalk-clock-in/      钉钉打卡子目录（时间窗配置、自动调度）
+qq-classic-farm/        QQ 经典农场子项目（模板、视觉 sidecar、规则模块）
 scripts/
   ios/run-action.mjs    iPhone 自动化脚本（Appium + XCUITest）
 ```
@@ -22,7 +24,7 @@ scripts/
 - 微信内置本地命令：`打卡`、`偷菜`、`退出钉钉`。
 - Android 和 iPhone 共用同一套命令语义，默认自动识别连接设备，也支持手动指定平台。
 - 自动打卡调度：工作日 `09:01-09:10` 随机上班打卡，`18:10-18:20` 随机下班打卡。
-- 自动偷菜调度：默认每 `5` 分钟执行一次进入 `QQ经典农场` 的流程。
+- 自动偷菜调度：默认每 `5` 分钟执行一次进入 `QQ经典农场` 的流程，底层实现来自 [`qq-classic-farm/`](./qq-classic-farm)。
 - 主动消息：每天 `08:00` 市场价格简报，每天 `09:05` 晨间鼓励。
 - 支持文本、图片、语音、视频、文件消息，以及图片/视频/文件回复。
 
@@ -226,10 +228,14 @@ corepack pnpm --filter weixin-acp start -- -- node ./my-agent.js
 默认行为：
 
 - 自动检测当前连接的是 Android 还是 iPhone。
-- 如果同时连着两种设备，需显式设置 `WEIXIN_DEVICE_PLATFORM=android` 或 `WEIXIN_DEVICE_PLATFORM=ios`。
+- 未显式设置平台时，默认优先使用 Android；如果没有 Android 设备，再自动切到 iPhone。
+- 如果你要强制指定平台，仍然可以设置 `WEIXIN_DEVICE_PLATFORM=android` 或 `WEIXIN_DEVICE_PLATFORM=ios`。
 - `打卡` 完成后默认会清掉钉钉后台。
+- `偷菜` 完成后默认会清掉微信后台；Android 也会按需清理最近任务列表。
 - 若钉钉出现验证码、滑块、人脸或其他安全校验，需要先人工处理，自动化不会替你过风控。
 - `偷菜` 会先识别 QQ 农场当前场景（主页 / 好友页 / 商店 / 好友农场），再按统一语义执行；文字菜单优先走 OCR，田地里的采摘/偷取/除草/除虫仍主要依赖画布热点与视觉兜底。
+- QQ 农场现在额外支持可插拔视觉 sidecar：默认主链仍是 `OCR + OpenCV 模板 + 规则状态机`，仅在高波动页面才会按需启用 `OmniParser` / `Moondream` 兜底；这些视觉能力和模板资源都在 [`qq-classic-farm/`](./qq-classic-farm)。
+- 如果长时间进入不到 `QQ经典农场`，会自动按整条流程重新执行；默认最多尝试 `2` 次。
 
 ### 自动任务
 
@@ -240,20 +246,69 @@ corepack pnpm --filter weixin-acp start -- -- node ./my-agent.js
 | 晨间鼓励 | 每天 `09:05` 主动发送 | `WEIXIN_DAILY_MOTIVATION=0` |
 | 市场简报 | 每天 `08:00` 主动发送 | `WEIXIN_DAILY_CRYPTO_BRIEFING=0` |
 
-自动打卡时间窗统一在 [`packages/agent-acp/src/clock-in-config.ts`](./packages/agent-acp/src/clock-in-config.ts) 调整。
+自动打卡时间窗统一在 [`dingtalk-clock-in/src/clock-in-config.ts`](./dingtalk-clock-in/src/clock-in-config.ts) 调整。
 
 ### 常用自动化环境变量
 
 | 变量 | 说明 |
 | --- | --- |
-| `WEIXIN_DEVICE_PLATFORM` | 强制指定当前使用 `android` 或 `ios` |
+| `WEIXIN_DEVICE_PLATFORM` | 强制指定当前使用 `android` 或 `ios`；不设置时默认优先 Android，没有 Android 再走 iOS |
 | `WEIXIN_CLEAR_DINGTALK_AFTER_CLOCK_IN=0` | 关闭 Android/iPhone 共用的“打卡后自动关闭钉钉”行为 |
 | `WEIXIN_ANDROID_CLEAR_RECENT_APPS_AFTER_CLOCK_IN=0` | 仅 Android，关闭清理最近任务列表 |
+| `WEIXIN_CLEAR_WECHAT_AFTER_QQ_FARM=0` | 关闭 Android/iPhone 共用的“偷菜后自动关闭微信”行为 |
+| `WEIXIN_ANDROID_CLEAR_RECENT_APPS_AFTER_QQ_FARM=0` | 仅 Android，关闭偷菜后清理最近任务列表 |
 | `WEIXIN_QQ_FARM_INTERVAL_MINUTES=10` | 修改自动偷菜轮询间隔 |
+| `WEIXIN_QQ_FARM_RETRY_ATTEMPTS=3` | 修改偷菜流程进入 QQ 农场失败后的自动重试次数 |
+| `WEIXIN_QQ_FARM_RETRY_DELAY_MS=5000` | 修改偷菜流程两次自动重试之间的等待时间 |
+| `WEIXIN_QQ_FARM_ATTEMPT_TIMEOUT_MS=180000` | 修改单次偷菜流程的超时时间；当前主要用于 iPhone 子进程超时后自动重跑 |
 | `WEIXIN_QQ_FARM_QUERY_PREFIX=...` | Android 侧修改 QQ 农场搜索前缀 |
 | `WEIXIN_QQ_FARM_PINYIN_QUERY=...` | Android 侧修改 QQ 农场拼音搜索词 |
+| `WEIXIN_QQ_FARM_OMNIPARSER_ENABLE=1` | 启用 OmniParser UI 解析兜底；未设置 URL 时默认尝试 `http://127.0.0.1:7861/parse` |
+| `WEIXIN_QQ_FARM_OMNIPARSER_URL=http://127.0.0.1:7861/parse` | 指定 OmniParser sidecar HTTP 入口；当前项目约定返回结构化元素列表 |
+| `WEIXIN_QQ_FARM_MOONDREAM_ENABLE=1` | 启用 Moondream 语义视觉兜底；未设置 URL 时默认尝试本地 bridge `http://127.0.0.1:2020/v1` |
+| `WEIXIN_QQ_FARM_MOONDREAM_URL=http://127.0.0.1:2020/v1` | 指定 Moondream API 基地址，当前会调用 `/point`、`/detect` 与 `/query` |
+| `WEIXIN_QQ_FARM_MOONDREAM_API_KEY=...` | 为 Moondream Cloud API 设置 `X-Moondream-Auth` 认证头；本地 bridge 一般不需要 |
+| `WEIXIN_QQ_FARM_MOONDREAM_MODEL_ID=vikhyatk/moondream2` | 指定本地 bridge 默认加载的官方 Hugging Face 模型 |
+| `WEIXIN_QQ_FARM_MOONDREAM_REVISION=...` | 指定 Moondream 模型 revision |
+| `WEIXIN_QQ_FARM_MOONDREAM_PRELOAD=1` | 启动 bridge 时预加载模型，确保端口起来后即可直接推理 |
+| `WEIXIN_QQ_FARM_MOONDREAM_COMPILE=1` | 启动 bridge 后对模型执行 `compile()`；适合长时间常驻场景 |
+| `WEIXIN_QQ_FARM_VISION_VERBOSE=1` | 启动 OmniParser / Moondream sidecar 时打印完整安装和启动日志 |
+| `WEIXIN_QQ_FARM_VISION_TIMEOUT_MS=5000` | 修改 OmniParser / Moondream sidecar 的单次请求超时时间 |
+| `WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_MODE=auto` | Android 偷菜流程先尝试通用视觉 controller；`off` 关闭，`on` 则要求 controller 成功 |
+| `WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_COMMAND=...` | 覆盖默认 Android 视觉 controller 命令 |
+| `WEIXIN_QQ_FARM_VISION_CONTROLLER_PYTHON=/path/to/python3.11` | 指定 Android 视觉 controller 使用的 Python |
+| `WEIXIN_QQ_FARM_VISION_CONTROLLER_TIMEOUT_MS=60000` | 修改主流程调用 Android 视觉 controller 的总超时 |
+| `WEIXIN_QQ_FARM_VISION_MAX_STEPS=18` | 修改 Android 视觉 controller 单次最多动作步数 |
+| `WEIXIN_QQ_FARM_VISION_ACTION_DELAY_MS=900` | 修改 Android 视觉 controller 每步动作后的默认等待 |
+| `WEIXIN_QQ_FARM_VISION_DRY_RUN=1` | Android 视觉 controller 只记录截图和决策，不执行点击 |
+| `WEIXIN_QQ_FARM_VISION_SCRCPY_OBSERVER=1` | Android 视觉 controller 运行时自动打开 `scrcpy` 观察窗口 |
 | `WEIXIN_CRYPTO_IDS=btc,eth,sol` | 修改市场简报币种列表 |
 | `WEIXIN_CRYPTO_QUOTE_ASSET=USDT` | 修改市场简报报价币种 |
+
+### 可选视觉 Sidecar
+
+QQ 农场主链默认仍然走 `OCR + OpenCV 模板 + 规则状态机`。如果你想让高波动页面额外启用视觉模型兜底，可以先单独启动 sidecar：
+
+```bash
+corepack pnpm qq-farm:vision:omniparser
+corepack pnpm qq-farm:vision:moondream
+corepack pnpm qq-farm:vision:doctor
+WEIXIN_CONNECTED_DEVICE_ID=emulator-5554 corepack pnpm qq-farm:vision:controller -- --phase home
+WEIXIN_CONNECTED_DEVICE_ID=emulator-5554 corepack pnpm qq-farm:vision:controller -- --phase friends
+WEIXIN_CONNECTED_DEVICE_ID=emulator-5554 corepack pnpm qq-farm:record:manual -- --label wechat-qq-farm
+```
+
+说明：
+
+- `qq-farm:vision:omniparser` 会在 `qq-classic-farm/` 目录下创建 `.venv-omniparser`，拉取官方 `OmniParser` 仓库和权重，并启动该子项目自带的 `omniparser_bridge.py`
+- `qq-farm:vision:moondream` 会在 `qq-classic-farm/` 目录下创建 `.venv-moondream`，安装官方 Transformers 推理依赖，并启动该子项目自带的 `moondream_bridge.py`
+- `qq-farm:vision:controller` 会启动 `qq-classic-farm/vision_automation/` 里的 Android 通用视觉自动化 PoC，按 `ADB screencap/input + OmniParser + Moondream + 状态机` 执行 `home` 或 `friends` 阶段
+- `qq-farm:record:manual` 会启动 Android 手动流程录制器，保存截图序列、`getevent` 触摸日志和 Activity 时间线，适合先录一遍你的真实点击流程再还原成自动化
+- sidecar 启动脚本会优先选择 `python3.12 -> python3.11 -> python3.10`；如果已有 venv 仍然是更老的 Python，会自动重建
+- 上面这些根目录命令都只是对 [`qq-classic-farm/`](./qq-classic-farm) 子项目脚本的转发；你也可以直接在该子项目目录里执行
+- 两个 sidecar 默认都是关闭的，只有设置了 `WEIXIN_QQ_FARM_OMNIPARSER_ENABLE=1` 或 `WEIXIN_QQ_FARM_MOONDREAM_ENABLE=1` 才会在 QQ 农场流程里参与兜底
+- `qq-farm:vision:doctor` 只做端口连通性检查，不会自动拉起服务
+- Android 主流程默认是 `OCR + OpenCV 模板 + 规则状态机`；当 `WEIXIN_QQ_FARM_ANDROID_VISION_CONTROLLER_MODE=auto` 时，会先尝试视觉 controller，失败再回退到现有偷菜实现
 
 ## Android 配置
 

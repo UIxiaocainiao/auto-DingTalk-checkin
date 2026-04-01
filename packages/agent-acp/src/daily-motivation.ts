@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { sendProactiveTextMessage } from "weixin-agent-sdk";
+import { sendProactiveTextMessageCompat } from "./proactive-sdk-compat.js";
 
 const DAILY_MOTIVATION_HOUR = 9;
 const DAILY_MOTIVATION_MINUTE = 5;
@@ -141,7 +141,7 @@ export function startDailyMotivationScheduler(
       }
 
       const text = pickDailyMotivation(today);
-      await sendProactiveTextMessage({ text });
+      await sendProactiveTextMessageCompat({ text });
       log(`[daily-motivation] ${today} 已发送晨间鼓励文案`);
       await saveState({
         lastSentDate: today,
